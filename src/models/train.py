@@ -24,6 +24,7 @@ import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
@@ -67,9 +68,15 @@ def _dvc_data_hash() -> str:
 
 
 def build_model(model_name: str, hp: dict[str, Any], random_seed: int) -> Any:
-    """Returns an unfitted estimator. Kept tiny for now: only logreg.
-    XGBoost / LightGBM / CatBoost / RandomForest will be added in
-    follow-up commits to keep each commit's diff inspectable."""
+    """Returns an unfitted estimator. Hyperparameters come from
+    params.yaml → train.<model_name>. Switching `train.active_model`
+    between runs (with feature_set held fixed) is the model-axis demo.
+
+    For boosted-tree libraries we keep n_jobs/threads modest by default —
+    the dataset is small enough (<150k rows) that single-thread fit is
+    seconds, and stable timings across runs make MLflow comparisons
+    cleaner.
+    """
     if model_name == "logreg":
         return LogisticRegression(
             C=hp.get("C", 1.0),
@@ -77,6 +84,52 @@ def build_model(model_name: str, hp: dict[str, Any], random_seed: int) -> Any:
             class_weight=hp.get("class_weight"),
             random_state=random_seed,
             solver="lbfgs",
+        )
+    if model_name == "random_forest":
+        return RandomForestClassifier(
+            n_estimators=hp.get("n_estimators", 200),
+            max_depth=hp.get("max_depth"),
+            class_weight=hp.get("class_weight"),
+            random_state=random_seed,
+            n_jobs=-1,
+        )
+    if model_name == "xgboost":
+        from xgboost import XGBClassifier
+
+        return XGBClassifier(
+            n_estimators=hp.get("n_estimators", 400),
+            max_depth=hp.get("max_depth", 6),
+            learning_rate=hp.get("learning_rate", 0.05),
+            subsample=hp.get("subsample", 0.9),
+            colsample_bytree=hp.get("colsample_bytree", 0.9),
+            random_state=random_seed,
+            tree_method="hist",
+            eval_metric="logloss",
+            n_jobs=-1,
+        )
+    if model_name == "lightgbm":
+        from lightgbm import LGBMClassifier
+
+        return LGBMClassifier(
+            n_estimators=hp.get("n_estimators", 400),
+            num_leaves=hp.get("num_leaves", 63),
+            learning_rate=hp.get("learning_rate", 0.05),
+            subsample=hp.get("subsample", 0.9),
+            colsample_bytree=hp.get("colsample_bytree", 0.9),
+            random_state=random_seed,
+            n_jobs=-1,
+            verbose=-1,
+        )
+    if model_name == "catboost":
+        from catboost import CatBoostClassifier
+
+        return CatBoostClassifier(
+            iterations=hp.get("iterations", 400),
+            depth=hp.get("depth", 6),
+            learning_rate=hp.get("learning_rate", 0.05),
+            random_seed=random_seed,
+            verbose=False,
+            allow_writing_files=False,
         )
     raise NotImplementedError(
         f"Model '{model_name}' not yet wired up in train.py. "
