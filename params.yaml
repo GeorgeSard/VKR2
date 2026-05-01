@@ -75,11 +75,15 @@ train:
     max_depth: 12
     class_weight: balanced
   xgboost:
-    n_estimators: 400
-    max_depth: 6
+    n_estimators: 800
+    max_depth: 8
     learning_rate: 0.05
     subsample: 0.9
     colsample_bytree: 0.9
+    # Balance the 76/24 class skew (1-0.24)/0.24 ≈ 3.17. Without this,
+    # XGBoost optimizes for accuracy and underpredicts the minority
+    # (delayed) class — recall collapses, see Run #4.
+    scale_pos_weight: 3.17
   lightgbm:
     n_estimators: 400
     num_leaves: 63

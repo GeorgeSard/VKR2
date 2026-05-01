@@ -102,6 +102,7 @@ def build_model(model_name: str, hp: dict[str, Any], random_seed: int) -> Any:
             learning_rate=hp.get("learning_rate", 0.05),
             subsample=hp.get("subsample", 0.9),
             colsample_bytree=hp.get("colsample_bytree", 0.9),
+            scale_pos_weight=hp.get("scale_pos_weight", 1.0),
             random_state=random_seed,
             tree_method="hist",
             eval_metric="logloss",
