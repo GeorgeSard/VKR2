@@ -1,0 +1,71 @@
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ==== Virtual envs ====
+.venv/
+venv/
+env/
+ENV/
+
+# ==== IDE / OS ====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==== Secrets / env ====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ==== ML / DVC / MLflow ====
+mlruns/
+mlartifacts/
+.dvc/cache
+.dvc/tmp
+.dvc/config.local
+
+# ==== Data and models — версионируются через DVC, не git ====
+data/raw/*
+data/interim/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+models/*
+!models/.gitkeep
+
+# ==== Reports artifacts (figures генерируются) ====
+reports/figures/*
+!reports/figures/.gitkeep
+
+# ==== Jupyter ====
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# ==== Logs ====
+*.log
+logs/
+
+# ==== Docker ====
+*.pid
