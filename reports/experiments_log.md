@@ -20,6 +20,7 @@
 | 3 | `cb56b5bc` | `6f28a3b` | with_weather (28) | logreg | 0.771 | 0.534 | 0.700 | **0.606** | **0.825** | 0.707 |
 | 4 | `1b00226a` | `45834a0` | with_weather (28) | xgboost (default) | 0.835 | 0.825 | 0.438 | **0.572** | **0.839** | 0.731 |
 | 5 | `a7a0ecd5` | `341e954` | with_weather (28) | xgboost (tuned) | 0.790 | 0.569 | 0.677 | **0.619** | **0.830** | 0.720 |
+| 6 | `4227cd7b` | `b3dc9c8` | with_weather (28) | xgboost (optuna) | 0.795 | 0.576 | 0.696 | **0.630** | **0.839** | 0.731 |
 
 (*В feature_set указано число признаков до one-hot.*)
 
@@ -107,6 +108,46 @@ seed и таргет — те же. Гиперпараметры XGBoost — `pa
 ближе к recall-приоритету. Это и есть «дельта от гиперпараметров,
 изолированная от данных».
 
+### Δ5.  Run #5 → Run #6 — Optuna-tuning XGBoost (TPE, 30 trials)
+
+**Что изменено:** запущен `python -m src.models.tune --n-trials 30`.
+Optuna (TPE-сэмплер с тем же `seed=42`) перебрал семь гиперпараметров
+XGBoost: `n_estimators ∈ [200..1200]`, `max_depth ∈ [4..10]`,
+`learning_rate ∈ [0.01..0.2]` (log-scale), `subsample ∈ [0.6..1.0]`,
+`colsample_bytree ∈ [0.6..1.0]`, `min_child_weight ∈ [1..20]`,
+`scale_pos_weight ∈ [1.0..5.0]`. Целевая функция — F1 на val.
+
+**Найденная конфигурация (`models/best_xgboost_params.yaml`):**
+
+```yaml
+n_estimators: 1000
+max_depth: 7
+learning_rate: 0.0138        # ↓ от 0.05 ручного — компенсируется бо́льшим n_estimators
+subsample: 0.739             # ↓ от 0.9 — сильнее регуляризация
+colsample_bytree: 0.813
+min_child_weight: 9          # новый, не настраивался вручную
+scale_pos_weight: 2.371      # ↓ от 3.17 — менее агрессивный сдвиг рабочей точки
+```
+
+| метрика | Run #5 (manual) | Run #6 (optuna) | Δ |
+|---|---|---|---|
+| accuracy | 0.790 | 0.795 | +0.005 |
+| precision | 0.569 | 0.576 | +0.007 |
+| recall | 0.677 | 0.696 | +0.019 |
+| f1 | 0.619 | **0.630** | +0.011 (+1.8 %) |
+| roc_auc | 0.830 | **0.839** | +0.009 |
+| pr_auc | 0.720 | 0.731 | +0.011 |
+
+**Вывод:** Optuna нашла лучший конфиг по всем шести метрикам
+одновременно — это редкий случай (обычно тюнинг сдвигает trade-off
+между precision/recall). Ключевое наблюдение: алгоритм сам пришёл к
+**менее агрессивному** `scale_pos_weight` (2.37 вместо моего ручного
+3.17), скомпенсировав это меньшим `learning_rate` и более сильной
+регуляризацией через `subsample`. Прирост скромный (+1.8 % F1),
+потому что ручной конфиг Run #5 уже был близок к оптимуму поиска —
+это нормальный исход и хороший сюжет: **MLOps-инструменты выжимают
+последние проценты, но основную работу делают данные** (см. Δ1).
+
 ## Снимок прогресса по F1 и ROC-AUC
 
 ```
@@ -114,8 +155,9 @@ Run #  feature_set    model            f1     roc_auc
   1    basic          logreg          0.450    0.665      ┐
   2    extended       logreg          0.543    0.766      │  data axis
   3    with_weather   logreg          0.606    0.825      ┘
-  4    with_weather   xgboost         0.572    0.839      ─  model axis
-  5    with_weather   xgboost (tuned) 0.619    0.830      ─  hyperparam axis
+  4    with_weather   xgboost         0.572    0.839      ─  model axis (raw)
+  5    with_weather   xgboost (tuned) 0.619    0.830      ─  hyperparam axis (manual)
+  6    with_weather   xgboost (optuna)0.630    0.839      ─  hyperparam axis (auto)
 ```
 
 ## Что воспроизводимо и как
@@ -129,6 +171,7 @@ Run #  feature_set    model            f1     roc_auc
 | #2, #3 | `129d431 experiment: data axis — feature progression on logreg` |
 | #4 | `45834a0 experiment: switch active model logreg → xgboost on with_weather features` |
 | #5 | `341e954 experiment: tune xgboost — depth 6→8, n_est 400→800, scale_pos_weight 3.17` |
+| #6 | `b3dc9c8 feat(tuning): add Optuna XGBoost tuner with single-run MLflow logging` |
 
 Чтобы воспроизвести любой run:
 
@@ -144,8 +187,6 @@ md5 raw-датасета), `feature_set`, `model`, `task`, `params_version`.
 
 ## Что дальше — задел для следующих итераций
 
-- **Run #6:** Optuna-тюнинг XGBoost (Bayesian search по `n_estimators`,
-  `max_depth`, `learning_rate`, `min_child_weight`, `subsample`).
 - **Run #7:** LightGBM на тех же признаках для сравнения с XGBoost.
 - **Run #8:** ансамбль (stacking) победителей — обычно ещё +1–2 пункта F1.
 - **Серия по второй задаче (`delay_cause`, multi-class):** пройти
