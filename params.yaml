@@ -47,7 +47,7 @@ split:
 features:
   # Active feature set name — referenced by training. Switching this between
   # runs (with everything else fixed) is one of the demo axes for the report.
-  active_set: basic
+  active_set: with_weather
   # Definitions live in src/features/feature_sets.py; listed here only so DVC
   # invalidates downstream stages when the choice changes.
   available_sets:
