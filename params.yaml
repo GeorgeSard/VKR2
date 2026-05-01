@@ -98,5 +98,7 @@ train:
   task: delay_binary
 
 mlflow:
-  tracking_uri: http://localhost:5000
+  # File backend for the baseline phase: no server needed, mlruns/ holds
+  # everything. Switch to http://localhost:5000 once Docker stack is up.
+  tracking_uri: file:./mlruns
   experiment_name: flight-delay-mlops
