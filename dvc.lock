@@ -1,0 +1,60 @@
+schema: '2.0'
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+    - path: data/raw/flight_delays_ru.parquet
+      hash: md5
+      md5: 89f1acd4cfba4ec38ea734c0510bf6be
+      size: 12314449
+    - path: src/config.py
+      hash: md5
+      md5: cec4bde1c74e50590fadf0b93527f973
+      size: 1397
+    - path: src/data/ingest.py
+      hash: md5
+      md5: 90698e4030bee10c8c925a7d26c34357
+      size: 2816
+    params:
+      params.yaml:
+        data.interim_parquet: data/interim/flight_delays_clean.parquet
+        data.raw_parquet: data/raw/flight_delays_ru.parquet
+    outs:
+    - path: data/interim/flight_delays_clean.parquet
+      hash: md5
+      md5: 14bda79a71bacb0147272e939a45bfd2
+      size: 14449295
+  split:
+    cmd: python -m src.data.split
+    deps:
+    - path: data/interim/flight_delays_clean.parquet
+      hash: md5
+      md5: 14bda79a71bacb0147272e939a45bfd2
+      size: 14449295
+    - path: src/config.py
+      hash: md5
+      md5: cec4bde1c74e50590fadf0b93527f973
+      size: 1397
+    - path: src/data/split.py
+      hash: md5
+      md5: 73b4e8b182fe1bf5f13a533785e73568
+      size: 2508
+    params:
+      params.yaml:
+        base.random_seed: 42
+        split.strategy: time_based
+        split.train_end_date: '2024-12-31'
+        split.val_end_date: '2025-06-30'
+    outs:
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: db6a3140ffa708073e060630616d9218
+      size: 2555380
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 6d55bb9e8a5e1ed62d6e0496e747f680
+      size: 9958199
+    - path: data/processed/val.parquet
+      hash: md5
+      md5: d32292ae56ed53f7cc598a0c24f2c0e6
+      size: 2537841

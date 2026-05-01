@@ -1,0 +1,102 @@
+# =============================================================================
+# Centralized experiment parameters for the flight-delay-mlops project.
+#
+# Anything tunable lives here so DVC tracks it as a pipeline input — changing
+# a value here is what triggers `dvc repro` and shows up in MLflow runs.
+#
+# Convention: every section corresponds to a DVC stage in dvc.yaml.
+# =============================================================================
+
+base:
+  # Single source of truth for randomness. Reused in split, training, tuning.
+  random_seed: 42
+  # Used to tag MLflow runs and DVC params so report screenshots can group runs.
+  params_version: v1
+
+data:
+  raw_parquet: data/raw/flight_delays_ru.parquet
+  raw_sample_csv: data/raw/flight_delays_ru_sample.csv
+  interim_parquet: data/interim/flight_delays_clean.parquet
+  # Columns that are post-event ground-truth components — must be excluded from
+  # any feature set to prevent target leakage. Documented in DATA_DICTIONARY.md.
+  leakage_columns:
+    - gt_carrier_delay_minutes
+    - gt_weather_delay_minutes
+    - gt_airport_congestion_delay_minutes
+    - gt_reactionary_delay_minutes
+    - gt_security_delay_minutes
+    - arr_delay_minutes
+    - is_arrival_delayed_15m
+    - actual_departure_local
+    - actual_arrival_local
+    - cancellation_flag
+    - cancellation_reason
+    - diversion_flag
+
+split:
+  # Time-based split — train on history, validate on the next slice, test on most
+  # recent. This mimics deployment more honestly than random shuffling.
+  strategy: time_based
+  train_end_date: "2024-12-31"
+  val_end_date: "2025-06-30"
+  # Output paths. interim_parquet is read; these three are written.
+  train_path: data/processed/train.parquet
+  val_path: data/processed/val.parquet
+  test_path: data/processed/test.parquet
+
+features:
+  # Active feature set name — referenced by training. Switching this between
+  # runs (with everything else fixed) is one of the demo axes for the report.
+  active_set: basic
+  # Definitions live in src/features/feature_sets.py; listed here only so DVC
+  # invalidates downstream stages when the choice changes.
+  available_sets:
+    - basic
+    - extended
+    - with_weather
+
+train:
+  # Active model name — switched per run for the model-comparison demo axis.
+  active_model: logreg
+  available_models:
+    - logreg
+    - random_forest
+    - xgboost
+    - lightgbm
+    - catboost
+
+  # Per-model defaults. Tuning (Optuna) writes a tuned-params file separately.
+  logreg:
+    C: 1.0
+    max_iter: 1000
+    class_weight: balanced
+  random_forest:
+    n_estimators: 200
+    max_depth: 12
+    class_weight: balanced
+  xgboost:
+    n_estimators: 400
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.9
+    colsample_bytree: 0.9
+  lightgbm:
+    n_estimators: 400
+    num_leaves: 63
+    learning_rate: 0.05
+    subsample: 0.9
+    colsample_bytree: 0.9
+  catboost:
+    iterations: 400
+    depth: 6
+    learning_rate: 0.05
+
+  # Task switch. The dataset supports both:
+  #   delay_binary   — will the flight be delayed >15 min (head A, classification)
+  #   delay_minutes  — how many minutes (head A, regression)
+  #   delay_cause    — which cause class (head B, multi-class)
+  task: delay_binary
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: flight-delay-mlops

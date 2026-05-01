@@ -1,0 +1,31 @@
+# DVC pipeline — текущие стадии. По мере прохождения этапов CLAUDE.md §7
+# сюда будут добавляться `features`, `train`, `evaluate`. Пока что — нижняя
+# часть жизненного цикла: ingest → split.
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+      - src/data/ingest.py
+      - src/config.py
+      - data/raw/flight_delays_ru.parquet
+    params:
+      - data.raw_parquet
+      - data.interim_parquet
+    outs:
+      - data/interim/flight_delays_clean.parquet
+
+  split:
+    cmd: python -m src.data.split
+    deps:
+      - src/data/split.py
+      - src/config.py
+      - data/interim/flight_delays_clean.parquet
+    params:
+      - base.random_seed
+      - split.strategy
+      - split.train_end_date
+      - split.val_end_date
+    outs:
+      - data/processed/train.parquet
+      - data/processed/val.parquet
+      - data/processed/test.parquet

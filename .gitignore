@@ -44,6 +44,7 @@ mlartifacts/
 .dvc/config.local
 
 # ==== Data and models — версионируются через DVC, не git ====
+# В git попадают только .dvc-метаданные и .gitkeep, сами данные — в DVC remote.
 data/raw/*
 data/interim/*
 data/processed/*
@@ -52,8 +53,13 @@ data/external/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !data/external/.gitkeep
+!data/raw/*.dvc
+!data/interim/*.dvc
+!data/processed/*.dvc
+!data/external/*.dvc
 models/*
 !models/.gitkeep
+!models/*.dvc
 
 # ==== Reports artifacts (figures генерируются) ====
 reports/figures/*
