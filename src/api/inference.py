@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -55,13 +56,19 @@ class ModelStore:
         return self.binary is not None and self.cause is not None
 
     def load_all(self) -> None:
-        params = load_params()
-        raw_uri = params["mlflow"]["tracking_uri"]
-        if raw_uri.startswith("file:") and not raw_uri.startswith("file:/"):
-            rel = raw_uri.removeprefix("file:")
-            tracking_uri = f"file:{(PROJECT_ROOT / rel).resolve()}"
+        # Env var wins over params.yaml so docker-compose can point at the
+        # mlflow service (http://mlflow:5000) without rewriting config.
+        env_uri = os.environ.get("MLFLOW_TRACKING_URI")
+        if env_uri:
+            tracking_uri = env_uri
         else:
-            tracking_uri = raw_uri
+            params = load_params()
+            raw_uri = params["mlflow"]["tracking_uri"]
+            if raw_uri.startswith("file:") and not raw_uri.startswith("file:/"):
+                rel = raw_uri.removeprefix("file:")
+                tracking_uri = f"file:{(PROJECT_ROOT / rel).resolve()}"
+            else:
+                tracking_uri = raw_uri
         mlflow.set_tracking_uri(tracking_uri)
         log.info("MLflow tracking URI: %s", tracking_uri)
 

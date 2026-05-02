@@ -1,0 +1,55 @@
+# docker-compose for the flight-delay-mlops deployment surface.
+#
+# Two services:
+#   mlflow — tracking server with SQLite backend + local artifact root
+#   api    — FastAPI inference service that loads models from the registry
+#
+# Boot order: api `depends_on` mlflow with `condition: service_healthy`,
+# so api won't try to load models until mlflow is up.
+#
+# First-time setup (after `docker compose up`):
+#   1. Migrate existing mlruns/ into the containerised mlflow if needed,
+#      OR re-run the training pipeline against the new tracking URI
+#      (point MLFLOW_TRACKING_URI to http://localhost:5000 and re-run).
+#   2. python -m src.models.registry  — registers Run #6 + C5.
+#   3. curl http://localhost:8000/health → expect status: ok.
+#
+# Networking: both services join the default bridge network. api reaches
+# mlflow at http://mlflow:5000 (Docker DNS resolves the service name).
+
+services:
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow.Dockerfile
+    container_name: flight-delay-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      # Bind-mount the local mlruns/ directory. All 14 existing runs
+      # plus the two registered models (flight-delay-binary,
+      # flight-delay-cause) are immediately available — no migration
+      # step on first `docker compose up`.
+      - ./mlruns:/mlflow/mlruns
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: flight-delay-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Override the file:./mlruns default in params.yaml for the
+      # containerised setup. src/api/inference.py prefers this env var
+      # over params.yaml so we don't have to rewrite config per-env.
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
