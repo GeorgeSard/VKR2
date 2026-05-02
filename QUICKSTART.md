@@ -34,7 +34,7 @@ cd /tmp/vkr2-build && docker compose build api && docker compose up -d
 
 ## 3. Ручки FastAPI — что делают
 
-Все 4 ручки сервиса:
+Все 6 ручек сервиса:
 
 ### `GET /health`
 Жив ли сервис и обе ли модели загружены в память.
@@ -68,6 +68,22 @@ curl -s -X POST http://localhost:8000/predict/cause \
   -H 'Content-Type: application/json' \
   -d @payload.json
 # {"predicted_cause":"weather","class_probabilities":{...},...}
+```
+
+### `POST /feedback` — обратная связь от реальной жизни
+Замыкает ML-цикл: после реального вылета приходит факт (была ли задержка, какая причина), записывается в `data/feedback/feedback.parquet`. Эти записи — семя для следующей итерации DVC (новый train split → переобучение).
+```bash
+# request_id берём из заголовка X-Request-ID, который вернул /predict
+curl -s -X POST http://localhost:8000/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"request_id":"abc123","actual_is_delayed":true,"actual_delay_minutes":42,"actual_cause":"weather"}'
+# {"stored":true,"total_records":1}
+```
+
+### `GET /metrics` — Prometheus
+Текстовый формат для Prometheus scrape. Три семейства метрик: счётчик запросов по эндпоинтам, гистограмма latency, распределение предсказаний по классам (для отлова дрейфа модели).
+```bash
+curl -s http://localhost:8000/metrics | head -30
 ```
 
 ### Пример payload (`payload.json`)
@@ -130,7 +146,10 @@ docker compose restart api       # рестарт только api без пер
 │   │   ├── registry.py           ← регистрация лидеров в Model Registry
 │   │   ├── evaluate.py           ← метрики
 │   │   └── score_dataset.py      ← финальный scored test dataset
-│   └── monitoring/               ← пусто (Этап 9)
+│   └── monitoring/               ← Этап 9: structured logger, Prometheus, feedback sink
+│       ├── logger.py             ← JSON-логи на stdout (для Loki/ELK)
+│       ├── metrics.py            ← prometheus_client: requests, latency, predictions
+│       └── feedback.py           ← append-only parquet sink под /feedback
 │
 ├── data/                         ← gitignored, под управлением DVC
 ├── models/                       ← gitignored, лучшие Optuna params

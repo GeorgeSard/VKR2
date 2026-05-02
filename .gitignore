@@ -50,11 +50,13 @@ data/interim/*
 data/processed/*
 data/external/*
 data/featurized/*
+data/feedback/*
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !data/external/.gitkeep
 !data/featurized/.gitkeep
+!data/feedback/.gitkeep
 !data/raw/*.dvc
 !data/interim/*.dvc
 !data/processed/*.dvc

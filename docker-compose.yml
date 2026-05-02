@@ -61,6 +61,9 @@ services:
       # same host path inside the container so mlflow.sklearn.load_model
       # can read the artifact tree without re-registering on each rebuild.
       - ./mlruns:/Users/georgij/Projects/ВКР2/mlruns
+      # Feedback sink (Stage 9). Persisted on host so /feedback survives
+      # `docker compose down` and feeds the next DVC iteration.
+      - ./data/feedback:/app/data/feedback
     depends_on:
       mlflow:
         condition: service_healthy

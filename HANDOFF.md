@@ -6,10 +6,12 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-03 (Этап 8 ЗАКРЫТ — docker compose
-поднят, обе модели грузятся в api из MLflow Registry, все 4 ручки
-отработали с теми же значениями что в локальном TestClient-смоке)
-**HEAD git:** см. `git log -1` — последний коммит закрывает Stage 8
+**Последнее обновление:** 2026-05-03 (Этапы 8 + 9 ЗАКРЫТЫ — docker
+compose поднимает mlflow + api, FastAPI отдаёт 6 ручек: predict/{delay,
+cause}, model/info, health, /feedback (loop closure), /metrics
+(Prometheus). Structured JSON-логи с request_id связывают prediction ↔
+feedback. Smoke прошёл end-to-end.)
+**HEAD git:** см. `git log -1` — последний коммит закрывает Stage 9
 **Текущая ветка:** `main`
 
 ---
@@ -61,8 +63,8 @@
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
 | 7. Научные эксперименты | ✅ ЗАКРЫТА | binary 8 runs (plateau F1 0.63); cause 5 runs (C1-C5, plateau macro_f1 0.36); scored test dataset + README собраны |
 | **8. FastAPI + Docker** | ✅ ЗАКРЫТ | docker compose up поднимает mlflow + api; обе модели грузятся из Registry через bind-mount; smoke `curl /health`, `/model/info`, `POST /predict/{delay,cause}` дают те же значения, что локальный TestClient |
-| 9. Мониторинг + feedback loop | ❌ не начато | пустая `src/monitoring/` ждёт Prometheus + structured logging |
-| 10. Демонстрация end-to-end | ❌ не начато | финальный демо-скрипт замыкания feedback loop |
+| 9. Мониторинг + feedback loop | ✅ ЗАКРЫТ | `src/monitoring/{logger,metrics,feedback}.py`; middleware ставит request_id, пишет 1 JSON-лог на запрос + Prometheus counters/histograms; `POST /feedback` персистит факт в `data/feedback/feedback.parquet` для следующей итерации DVC |
+| 10. Демонстрация end-to-end | ❌ не начато | финальный демо-скрипт замыкания feedback loop (predict → feedback → новый DVC round → переобучение) |
 
 ---
 

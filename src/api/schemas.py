@@ -114,3 +114,33 @@ class ModelInfo(BaseModel):
 class ModelInfoResponse(BaseModel):
     binary: ModelInfo
     cause: ModelInfo
+
+
+class FeedbackRecord(BaseModel):
+    """Real-world outcome reported back after a prediction.
+
+    `request_id` ties this back to the predict log line that produced
+    the original forecast. At least one of the actual_* fields must be
+    supplied — both is fine and recommended.
+    """
+
+    request_id: str = Field(..., description="The X-Request-ID returned by /predict/*")
+    actual_is_delayed: bool | None = Field(
+        None, description="True if the flight was actually delayed >15 min"
+    )
+    actual_delay_minutes: float | None = Field(
+        None, description="Actual minutes of delay (signed; negative = early)"
+    )
+    actual_cause: str | None = Field(
+        None,
+        description=(
+            "Actual cause class (one of: weather, carrier_operational, "
+            "airport_congestion, reactionary, security, cancelled, none)"
+        ),
+    )
+    notes: str | None = Field(None, description="Free-form notes (optional)")
+
+
+class FeedbackAck(BaseModel):
+    stored: bool
+    total_records: int

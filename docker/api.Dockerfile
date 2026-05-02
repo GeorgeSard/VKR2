@@ -45,7 +45,8 @@ RUN uv venv /opt/venv && \
         "pandas>=2.2,<3.0" \
         "numpy>=1.26,<3.0" \
         "pyarrow>=15.0" \
-        "pyyaml>=6.0,<7.0"
+        "pyyaml>=6.0,<7.0" \
+        "prometheus-client>=0.21,<1.0"
 
 # ---------- runtime ----------
 FROM python:3.11-slim AS runtime
@@ -68,6 +69,9 @@ COPY --chown=app:app src/ ./src/
 COPY --chown=app:app params.yaml ./
 COPY --chown=app:app models/label_classes_delay_cause.yaml ./models/
 
+# Feedback sink writes here. Volume in docker-compose persists it on host
+# so the file survives container restarts and feeds the next dvc round.
+RUN mkdir -p /app/data/feedback && chown -R app:app /app/data
 USER app
 
 EXPOSE 8000
