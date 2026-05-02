@@ -38,6 +38,9 @@ dependencies = [
 
     # config
     "pyyaml>=6.0,<7.0",
+
+    # report I/O
+    "openpyxl>=3.1,<4.0",
 ]
 
 [project.optional-dependencies]

@@ -61,9 +61,14 @@ models/*
 !models/.gitkeep
 !models/*.dvc
 
-# ==== Reports artifacts (figures генерируются) ====
+# ==== Reports artifacts (figures + scored deliverable генерируются) ====
 reports/figures/*
 !reports/figures/.gitkeep
+# Scored test dataset — большой (~13 MB), регенерируется через
+# `python -m src.models.score_dataset`. В git только сам скрипт.
+reports/scored_test_dataset.parquet
+reports/scored_test_dataset.csv
+reports/scored_test_dataset.xlsx
 
 # ==== Jupyter ====
 .ipynb_checkpoints/
