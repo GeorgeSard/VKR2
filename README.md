@@ -182,10 +182,11 @@ cd /tmp/vkr2-build && docker compose up -d
 
 ## 6. FastAPI — все 6 ручек с примерами
 
-После `docker compose up -d` сервис на http://localhost:8000.
-**Интерактивная документация** — http://localhost:8000/docs (можно тыкать прямо там).
+После `docker compose up -d` поднимаются два контейнера: `flight-delay-api` (FastAPI на порту 8000, описан ниже) и `flight-delay-mlflow` (MLflow tracking server на 5001). Все шесть ручек ниже — в API-контейнере на http://localhost:8000.
 
-### `GET /health` — жив ли сервис
+**Интерактивная документация (Swagger UI)** — http://localhost:8000/docs, можно тыкать любую ручку прямо в браузере.
+
+### `GET /health` — жив ли API-контейнер и обе ли модели в памяти
 
 ```bash
 curl -s http://localhost:8000/health
@@ -194,7 +195,11 @@ curl -s http://localhost:8000/health
 {"status":"ok","binary_loaded":true,"cause_loaded":true}
 ```
 
-**Что показывает:** обе ли модели загружены в память. Используется Docker healthcheck'ом — без зелёного `/health` контейнер считается мёртвым.
+**Что показывает:** под «сервисом» здесь имеется в виду **сам FastAPI-контейнер `flight-delay-api`** (тот, что слушает 8000-й порт). Endpoint отвечает на два вопроса:
+- процесс uvicorn внутри контейнера принимает HTTP — раз вернулся ответ, значит да;
+- `binary_loaded` / `cause_loaded` — обе ли модели подтянулись из MLflow Registry на старте (если `false` — модель не зарегистрирована или mlflow контейнер недоступен → `/predict/*` будут отдавать 503).
+
+Этот endpoint дёргает Docker healthcheck каждые 15 секунд (см. `HEALTHCHECK` в `docker/api.Dockerfile`). Если три проверки подряд провалились, контейнер помечается как `unhealthy` и оркестратор (compose / k8s) может его перезапустить.
 
 ---
 
