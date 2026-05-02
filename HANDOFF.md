@@ -6,50 +6,44 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после Этапа 5 + кода Этапа 8;
-Docker не установлен — нужен интерактивный sudo)
-**HEAD git:** `3fc2479` (`origin/main`, всё запушено)
+**Последнее обновление:** 2026-05-02 (Этап 5 закрыт, код Этапа 8 готов;
+Docker CLI 29.4.1 установлен пользователем, daemon ещё не стартанул)
+**HEAD git:** `2dd1a65` (`origin/main`, всё запушено)
 **Текущая ветка:** `main`
 
 ---
 
 ## ⚡ Резюме для следующей сессии — что делать сразу
 
-1. **Этап 7 (научные эксперименты) ЗАКРЫТ**: 13 runs всего, обе головы
-   достигли plateau, scored test dataset собран и задокументирован.
-2. **Этап 5 (DVC pipeline) ЗАКРЫТ**: добавлены стадии `featurize → train →
-   evaluate` поверх существующих `ingest → split`. Полный DAG из 5 узлов
-   воспроизводим одной командой `dvc repro`. См. раздел «DVC pipeline» ниже.
-3. **Решение пользователя для следующей сессии:** идём на **Этап 8 —
-   FastAPI + Docker**. Docker на хосте НЕ установлен, **пользователь
-   попросил Claude самого установить Docker Desktop** в новой сессии
-   (через `brew install --cask docker` + первый запуск `open -a Docker`
-   для принятия лицензии — потребуется подтверждение пользователя).
-3. **Стартовый план Этапа 8** (по плану CLAUDE.md §7.8):
-   - `brew install --cask docker` + первый запуск + ждать пока daemon
-     поднимется (`docker info` зелёный)
-   - `src/models/registry.py` — обёртка над MLflow Model Registry
-     для регистрации Run #6 (binary leader) и C5 (cause leader) под
-     именами `flight-delay-binary` / `flight-delay-cause`
-   - `src/api/schemas.py` — Pydantic-схемы input/output для обеих ручек
-   - `src/api/inference.py` — загрузка моделей из MLflow registry
-     (с in-memory кешем — модель грузится один раз при старте app)
-   - `src/api/main.py` — FastAPI app с ручками:
-     - `POST /predict/delay` — прогноз задержки + probability
-     - `POST /predict/cause` — классификация причины + per-class proba
-     - `GET /health` — health check (модели загружены?)
-     - `GET /model/info` — версии моделей (binary/cause), git_commit,
-       dvc_data_hash из MLflow тегов
-   - `docker/api.Dockerfile` — multi-stage build на python:3.11-slim
-   - `docker/mlflow.Dockerfile` — простой MLflow tracking server
-   - `docker-compose.yml` — `mlflow` + `api` сервисы
-   - Переключить `params.yaml → mlflow.tracking_uri` на
-     `http://mlflow:5000` для контейнерного режима (с fallback на
-     локальный file:./mlruns для dev)
-   - Smoke: `docker compose up` → `curl POST /predict/delay` с примером
-4. **Альтернатива Этапу 8:** C6 — двухступенчатая cause-постановка
-   (единственный способ пробить plateau головы B без новых фичей).
-   Пользователь от этого отказался в пользу деплоя.
+1. **Этап 5 (DVC pipeline) ЗАКРЫТ**: 5 стадий `ingest → split → featurize →
+   train → evaluate`, `dvc repro` от raw до метрик одной командой.
+   См. секцию «🧬 DVC pipeline» ниже + `reports/DVC_SCREENSHOTS_GUIDE.md`.
+2. **Этап 7 (научные эксперименты) ЗАКРЫТ**: 13 runs, plateau на обеих
+   головах, scored test dataset собран.
+3. **Этап 8 — код готов и протестирован локально.** Файлы в git:
+   `src/models/registry.py`, `src/api/{schemas,inference,main}.py`,
+   `docker/api.Dockerfile`, `docker/mlflow.Dockerfile`, `docker-compose.yml`.
+   Run #6 + C5 зарегистрированы в MLflow Registry как `flight-delay-binary` /
+   `flight-delay-cause` v1. Локальный smoke через TestClient: все 4 ручки
+   работают.
+4. **Что блокирует Этап 8:** Docker daemon не запущен.
+   - Docker CLI (29.4.1) установлен пользователем в этой сессии.
+   - Daemon недоступен — нужен `open -a Docker`, дождаться зелёной иконки
+     кита в menu bar, проверить `docker info` (ожидаем секцию Server: без
+     error).
+5. **Что делает Claude в начале следующей сессии** (после `docker info`
+   зелёный):
+   - `docker compose build` (~3-5 мин на первый раз)
+   - `docker compose up -d` + `docker compose logs -f api` для проверки
+     startup
+   - smoke `curl /health`, `curl /model/info`, `curl POST /predict/delay`
+   - скрин Swagger UI (http://localhost:8000/docs) для отчёта
+   - финальный коммит `feat(stage8): docker compose smoke validated`
+   - закрытие Этапа 8 в этой таблице
+6. **Гайды для отчёта (готовые к скринам):**
+   - `reports/DVC_SCREENSHOTS_GUIDE.md` — 7 скринов про DVC + сценарий
+     «изменили данные → метрика изменилась» (через `dvc metrics diff`)
+   - `reports/MLFLOW_SCREENSHOTS_GUIDE.md` — скрины MLflow UI
 
 ---
 
@@ -109,48 +103,91 @@ with TestClient(app) as c:
 Проверено: обе модели загружаются, predict_delay отдаёт probability=0.88
 на тестовом payload SVO→LED A320, predict_cause — argmax weather=0.57.
 
-### ⚠️ Блок — Docker не установлен (нужен sudo)
+### ✅ Docker CLI установлен | ⚠️ daemon ещё не запущен
 
-`brew install --cask docker` начал ставить Docker Desktop, скачал и
-скопировал `Docker.app` в `/Applications`, но упал на шаге линковки
-CLI плагинов в `/usr/local/cli-plugins`:
-
+Состояние на конец этой сессии:
 ```
-sudo: a terminal is required to read the password
+$ docker info
+Client:
+ Version:    29.4.1
+ Context:    default
+Server:
+failed to connect to the docker API at unix:///var/run/docker.sock
 ```
 
-Этот путь — системный, требует sudo для создания. Cask откатил установку.
+Это означает: Docker CLI поставлен, но Docker Desktop приложение не
+запущено, поэтому daemon недоступен.
 
-**Что нужно сделать пользователю** (один раз):
+**Что нужно сделать пользователю в начале следующей сессии** (один раз):
 
-Вариант A — пре-создать директорию (рекомендуется):
 ```bash
-sudo mkdir -p /usr/local/cli-plugins
-sudo chown $(whoami) /usr/local/cli-plugins
-brew install --cask docker
-open -a Docker          # принять лицензию в GUI
-# подождать пока daemon поднимется
-docker info             # должно вернуть нормальный вывод без error
+open -a Docker
+# подождать ~30 секунд, пока иконка кита в menu bar
+# перестанет анимироваться
+docker info     # ожидаем секцию Server: без error
 ```
 
-Вариант B — поставить Docker Desktop из .dmg вручную:
-1. Скачать Docker Desktop с https://www.docker.com/products/docker-desktop/
-2. Перетащить `Docker.app` в `/Applications`
-3. Запустить, принять лицензию, дождаться зелёного индикатора
-4. `docker info` для проверки
+Если Docker Desktop первый раз — попросит принять лицензию в GUI и,
+возможно, ввести пароль один раз для установки сетевых компонентов.
 
-После любого из вариантов следующая сессия Claude может выполнить:
+### Что делать в следующей сессии после `docker info` зелёный
+
+Файлы готовы (см. предыдущий блок), всё закоммичено. План:
+
+1. Сборка образов (~3-5 мин на первый раз):
+   ```bash
+   cd /Users/georgij/Projects/ВКР2
+   docker compose build
+   ```
+2. Подъём стека:
+   ```bash
+   docker compose up -d
+   docker compose ps    # mlflow + api в статусе healthy
+   docker compose logs -f api    # увидеть startup-логи Загрузки моделей
+   ```
+3. Smoke-тест:
+   ```bash
+   curl -s http://localhost:8000/health | jq
+   # ожидаем: {"status":"ok","binary_loaded":true,"cause_loaded":true}
+
+   curl -s http://localhost:8000/model/info | jq
+   # ожидаем: версии, run_id, git_commit, dvc_data_hash, метрики
+
+   # POST с примером рейса
+   curl -s -X POST http://localhost:8000/predict/delay \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "month":7,"day_of_week":3,"scheduled_dep_hour":14,
+       "scheduled_dep_minute":30,"is_weekend":0,"is_holiday_window":0,
+       "quarter":3,"distance_km":2300,"planned_block_minutes":195,
+       "airline_fleet_avg_age":12.5,"origin_hub_tier":1,"destination_hub_tier":2,
+       "inbound_delay_minutes":0,"origin_congestion_index":0.45,
+       "destination_congestion_index":0.32,"origin_temperature_c":18,
+       "origin_precip_mm":0,"origin_visibility_km":10,"origin_wind_mps":3.5,
+       "destination_temperature_c":22,"destination_precip_mm":0,
+       "destination_visibility_km":10,"destination_wind_mps":2.8,
+       "airline_code":"SU","aircraft_family":"A320","origin_iata":"SVO",
+       "destination_iata":"LED","route_group":"domestic_trunk",
+       "origin_weather_severity":"calm","destination_weather_severity":"calm"
+     }' | jq
+   # ожидаем: is_delayed=true, delay_probability~0.88
+   ```
+4. Открыть в браузере:
+   - http://localhost:8000/docs — Swagger UI с описанием API (для скрина в отчёт!)
+   - http://localhost:5000 — MLflow UI (контейнерная версия, видит те же 14 runs через bind-mount)
+5. **Этап 8 закроется** после успешного smoke. Останется коммит
+   `feat(stage8): docker compose smoke + screenshots` с финальным
+   скрином swagger UI.
+
+### Альтернатива на случай если Docker Desktop не пойдёт
+
+Можно использовать `colima` (легче, без GUI):
 ```bash
-cd /Users/georgij/Projects/ВКР2
-docker compose up --build
-# В другом терминале:
-curl -s http://localhost:8000/health | jq
-curl -s -X POST http://localhost:8000/predict/delay \
-  -H 'Content-Type: application/json' \
-  -d @docs/sample_flight.json | jq
+brew install colima
+colima start --cpu 4 --memory 6
+docker info     # должно работать через colima
 ```
-
-И на этом Этап 8 закроется полностью.
+Все docker-compose команды дальше идентичны.
 
 ---
 
@@ -445,7 +482,8 @@ xgboost defaults + delay_cause):
 | mlflow | `.venv/bin/mlflow` | 2.x | ✅, file backend `file:./mlruns`, 13 runs |
 | brew libomp | `/opt/homebrew/opt/libomp` | — | ✅ (нужно для xgboost на macOS) |
 | openpyxl | `.venv/bin/python` | 3.1.5 | ✅, добавлен в `pyproject.toml` для `score_dataset.py` |
-| **docker** | — | — | **❌ не установлен — Claude установит в начале Этапа 8** |
+| **docker CLI** | системный | 29.4.1 | ✅ установлен (через `brew install --cask docker`) |
+| **docker daemon** | Docker Desktop | — | ⚠️ **не запущен** — нужен `open -a Docker` в начале след. сессии |
 
 ### Команды для рестарта окружения
 
