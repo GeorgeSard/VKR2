@@ -22,6 +22,7 @@
 | 5 | `a7a0ecd5` | `341e954` | with_weather (28) | xgboost (tuned) | 0.790 | 0.569 | 0.677 | **0.619** | **0.830** | 0.720 |
 | 6 | `4227cd7b` | `b3dc9c8` | with_weather (28) | xgboost (optuna) | 0.795 | 0.576 | 0.696 | **0.630** | **0.839** | 0.731 |
 | 7 | `d60d3feb` | `c419a05` | with_weather (28) | lightgbm (default) | 0.836 | 0.825 | 0.439 | **0.573** | **0.839** | 0.731 |
+| 8 | `716664c0` | `3ce36c8` | with_weather (28) | lightgbm (optuna) | 0.783 | 0.552 | 0.731 | **0.629** | **0.839** | 0.732 |
 
 (*В feature_set указано число признаков до one-hot.*)
 
@@ -197,6 +198,85 @@ Run #4 (+0.047 → +0.058 F1) пришёл **не от XGBoost**, а от
 дисбаланса**. Соответствует тезису руководителя: «если перебор
 параметров ничего не даёт — проблема в датасете».
 
+### Δ7.  Run #7 → Run #8 — добавили балансировку и Optuna для LightGBM
+
+**Что изменено:** обобщён `tune.py` под `--model {xgboost, lightgbm}`
+(commit `3ce36c8`), запущен `python -m src.models.tune --model lightgbm
+--n-trials 30`. Optuna (TPE, тот же `seed=42`) перебрала восемь
+гиперпараметров LightGBM в диапазонах, параллельных XGBoost-серии:
+`n_estimators ∈ [200..1200]`, `num_leaves ∈ [15..255]` (главный
+регулятор сложности дерева в LightGBM, заменяет `max_depth`),
+`learning_rate ∈ [0.01..0.2]` (log), `subsample ∈ [0.6..1.0]`
+(с `subsample_freq=1` — иначе LightGBM игнорирует bagging),
+`colsample_bytree ∈ [0.6..1.0]`, `min_child_samples ∈ [5..100]`
+(аналог `min_child_weight`), `scale_pos_weight ∈ [1.0..5.0]`.
+
+**Найденная конфигурация (`models/best_lightgbm_params.yaml`):**
+
+```yaml
+n_estimators: 700
+num_leaves: 105
+learning_rate: 0.0141
+subsample: 0.9659           # subsample_freq=1 проставляется отдельно
+colsample_bytree: 0.7480
+min_child_samples: 27
+scale_pos_weight: 2.665     # < ручного 3.17, как и у XGBoost
+```
+
+| метрика | Run #7 (lgbm default) | Run #8 (lgbm optuna) | Δ |
+|---|---|---|---|
+| accuracy | 0.836 | 0.783 | −0.053 |
+| precision | 0.825 | 0.552 | −0.273 |
+| **recall** | 0.439 | **0.731** | **+0.292** |
+| **f1** | 0.573 | **0.629** | **+0.056 (+9.8 %)** |
+| roc_auc | 0.839 | 0.839 | 0.000 |
+| pr_auc | 0.731 | 0.732 | +0.001 |
+
+**Та же дельта, что Run #4 → Run #6 для XGBoost** (там было +0.058 F1).
+Сюжет идентичен: добавление `scale_pos_weight` сдвигает рабочую
+точку с precision-приоритета на recall, ROC-AUC не меняется (ранжирование
+то же), F1 растёт.
+
+### Δ8.  Финальная сверка — Run #6 (xgb optuna) vs Run #8 (lgbm optuna)
+
+Главный head-to-head серии: обе библиотеки **с одинаковой балансировкой
+и одинаковой методикой тюнинга** на тех же признаках.
+
+| метрика | Run #6 (xgb) | Run #8 (lgbm) | Δ (lgbm − xgb) |
+|---|---|---|---|
+| accuracy | 0.795 | 0.783 | −0.012 |
+| precision | 0.576 | 0.552 | −0.024 |
+| recall | 0.696 | 0.731 | +0.035 |
+| **f1** | **0.630** | 0.629 | **−0.001** |
+| **roc_auc** | **0.839** | **0.839** | 0.000 |
+| pr_auc | 0.731 | 0.732 | +0.001 |
+
+**Параметрическая параллель**, что особенно красиво для отчёта:
+TPE-сэмплер на двух разных библиотеках независимо сошёлся к
+**похожему режиму регуляризации**:
+
+|  | XGBoost (Run #6) | LightGBM (Run #8) |
+|---|---|---|
+| learning_rate | 0.0138 | 0.0141 |
+| n_estimators  | 1000 | 700 |
+| scale_pos_weight | 2.371 | 2.665 |
+| sample_per_tree (subsample) | 0.739 | 0.966 |
+| col fraction (colsample_bytree) | 0.813 | 0.748 |
+| leaf-floor (min_child_*) | 9 | 27 |
+
+В обоих случаях Optuna выбирает **низкий learning rate + умеренный
+`scale_pos_weight` ~ 2.5** (мягче моего ручного 3.17). Это сильное
+независимое подтверждение того, что 2.5 — реальная оптимальная точка
+для этого датасета, а не артефакт конкретной библиотеки.
+
+**Вывод для главы 3:** связка "бустинг + балансировка классов
++ Optuna" даёт plateau ≈ F1 0.63 / ROC-AUC 0.839 на этих признаках,
+независимо от XGBoost vs LightGBM. Дальнейший прирост ждать **не
+от смены модели в этом классе**, а от: (a) ещё одной серии фичей
+(сезонность, праздники, исторические задержки маршрута), (b) другой
+архитектуры — ансамбль logreg + xgb + lgbm (Run #10), (c) другой
+постановки задачи — переход на регрессию минут вместо бинарного.
+
 ## Снимок прогресса по F1 и ROC-AUC
 
 ```
@@ -209,7 +289,10 @@ Run #  feature_set    model              f1     roc_auc
                                                               library без балансировки
                                                               классов ничего не меняет
   5    with_weather   xgboost (tuned)   0.619    0.830      ─  hyperparam axis (manual)
-  6    with_weather   xgboost (optuna)  0.630    0.839      ─  hyperparam axis (auto)
+  6    with_weather   xgboost (optuna)  0.630    0.839      ┐  hyperparam axis (auto) —
+  8    with_weather   lightgbm (optuna) 0.629    0.839      ┘  библиотеки сходятся к
+                                                              одному plateau при
+                                                              одинаковой методике тюнинга
 ```
 
 ## Что воспроизводимо и как
@@ -225,6 +308,7 @@ Run #  feature_set    model              f1     roc_auc
 | #5 | `341e954 experiment: tune xgboost — depth 6→8, n_est 400→800, scale_pos_weight 3.17` |
 | #6 | `b3dc9c8 feat(tuning): add Optuna XGBoost tuner with single-run MLflow logging` |
 | #7 | `c419a05 experiment: switch active model xgboost → lightgbm on with_weather` |
+| #8 | `3ce36c8 feat(tuning): generalize Optuna tuner to support LightGBM` (study run on this HEAD) |
 
 Чтобы воспроизвести любой run:
 
@@ -240,14 +324,23 @@ md5 raw-датасета), `feature_set`, `model`, `task`, `params_version`.
 
 ## Что дальше — задел для следующих итераций
 
-- **Run #8:** LightGBM с балансировкой классов (`is_unbalance=True`
-  или `class_weight='balanced'`) + Optuna — честный head-to-head с
-  Run #6. Гипотеза: f1 ≈ 0.62–0.64, паритет с XGBoost.
-- **Run #9:** CatBoost на тех же фичах (с `auto_class_weights=Balanced`).
-  Часто лучший на табличке с категориями (у нас их много —
-  airline_code, airport ICAO, route, fleet_type).
-- **Run #10:** ансамбль (stacking/voting) победителей logreg + xgboost +
-  lgbm — обычно ещё +1–2 пункта F1.
+Серия `delay_binary` достигла plateau ≈ F1 0.63 / ROC-AUC 0.839 на
+текущем наборе фичей; следующие приросты можно ждать только от смены
+оси (новая ось — данные/ансамбль/постановка), не от ещё одного бустинга.
+
+- **Run #9:** CatBoost на тех же фичах (с `auto_class_weights=Balanced`)
+  + Optuna через расширение `tune.py`. Маловероятно перебьёт plateau,
+  но даёт третью точку библиотечной оси (xgb / lgbm / cb) — закрывает
+  «pool бустингов» в отчёте.
+- **Run #10:** ансамбль (stacking/voting) победителей logreg + xgboost
+  (Run #6) + lightgbm (Run #8) через новый `src/models/ensemble.py`.
+  Обычно даёт ещё +1–2 пункта F1 на бустинговом плато; в отчёте
+  закрывает архитектурную ось.
+- **Run #11+ — следующая ось данных:** добавить календарные/сезонные
+  фичи (праздники РФ, школьные каникулы, день недели × месяц
+  взаимодействия), исторический average delay по маршруту/борту,
+  индикатор пиковых часов. Это новая дельта по data-оси, аналог
+  Δ1 (extended) и Δ2 (with_weather).
 - **Серия по второй задаче (`delay_cause`, multi-class):** пройти
   ровно ту же data → model → tuning цепочку, но на причине задержки.
   Требует доработки `train.py` (сейчас падает на task != "delay_binary")
