@@ -27,11 +27,15 @@ import yaml
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder
 
 from src.config import load_params
 from src.features.build_features import Task, make_xy
 from src.features.feature_sets import get_feature_set
-from src.models.evaluate import binary_classification_metrics
+from src.models.evaluate import (
+    binary_classification_metrics,
+    multiclass_classification_metrics,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,8 +190,21 @@ def main(argv: list[str] | None = None) -> int:
     log.info("After cleanup: train X=%s y=%s | val X=%s y=%s",
              x_train.shape, y_train.shape, x_val.shape, y_val.shape)
 
-    if task == "delay_binary":
-        log.info("Class balance train: %s", y_train.value_counts(normalize=True).round(3).to_dict())
+    log.info("Class balance train: %s", y_train.value_counts(normalize=True).round(3).to_dict())
+
+    # XGBoost requires integer-encoded labels for multi-class. To keep
+    # the train.py main path uniform across estimators we wrap multi-class
+    # targets in a LabelEncoder; binary tasks pass through unchanged
+    # (LabelEncoder would still work, but is_departure_delayed_15m is
+    # already 0/1 so we keep the original dtype for sanity).
+    label_encoder: LabelEncoder | None = None
+    y_train_fit: np.ndarray | pd.Series = y_train
+    y_val_fit: np.ndarray | pd.Series = y_val
+    if task == "delay_cause":
+        label_encoder = LabelEncoder()
+        y_train_fit = label_encoder.fit_transform(y_train)
+        y_val_fit = label_encoder.transform(y_val)
+        log.info("Label encoder classes: %s", list(label_encoder.classes_))
 
     from src.features.build_features import build_preprocessor  # local to avoid sklearn at import time
     preprocessor = build_preprocessor(fs)
@@ -207,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                 "split_strategy": params["split"]["strategy"],
             }
         )
+        if task == "delay_cause" and label_encoder is not None:
+            mlflow.set_tag("n_classes", str(len(label_encoder.classes_)))
         mlflow.log_params(
             {
                 "random_seed": seed,
@@ -221,22 +240,54 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         log.info("Fitting %s on %d rows...", model_name, len(x_train))
-        pipeline.fit(x_train, y_train)
+        # For multi-class we counter cause-imbalance with sample weights
+        # derived from y_train frequencies. logreg also has class_weight
+        # in its own hp; sample_weight stacks on top harmlessly because
+        # logreg's class_weight is applied to the loss term *additively*
+        # with sample_weight — we keep sample_weight only for boosters
+        # to avoid double-weighting on logreg.
+        fit_params: dict[str, Any] = {}
+        if task == "delay_cause" and model_name in {"xgboost", "lightgbm", "catboost"}:
+            from sklearn.utils.class_weight import compute_sample_weight
 
+            sw = compute_sample_weight(class_weight="balanced", y=y_train_fit)
+            fit_params["estimator__sample_weight"] = sw
+        pipeline.fit(x_train, y_train_fit, **fit_params)
+
+        est = pipeline.named_steps["estimator"]
         if task == "delay_binary":
             y_pred = pipeline.predict(x_val)
             y_proba: np.ndarray | None = None
-            est = pipeline.named_steps["estimator"]
             if hasattr(est, "predict_proba"):
                 y_proba = pipeline.predict_proba(x_val)[:, 1]
             metrics = binary_classification_metrics(y_val.to_numpy(), y_pred, y_proba)
+        elif task == "delay_cause":
+            y_pred = pipeline.predict(x_val)
+            y_proba_mc: np.ndarray | None = None
+            if hasattr(est, "predict_proba"):
+                y_proba_mc = pipeline.predict_proba(x_val)
+            assert label_encoder is not None
+            labels_int = list(range(len(label_encoder.classes_)))
+            metrics = multiclass_classification_metrics(
+                np.asarray(y_val_fit), y_pred, y_proba_mc, labels=labels_int
+            )
         else:
-            raise NotImplementedError(f"Eval for task={task} added in a later commit")
+            raise NotImplementedError(f"Eval for task={task} not implemented")
 
         mlflow.log_metrics(metrics)
         log.info("Metrics: %s", {k: round(v, 4) for k, v in metrics.items()})
 
         mlflow.sklearn.log_model(pipeline, artifact_path="model")
+        if label_encoder is not None:
+            # Persist class order so the inference layer can decode integer
+            # predictions back into human-readable cause names.
+            classes_path = PROJECT_ROOT / "models" / f"label_classes_{task}.yaml"
+            classes_path.parent.mkdir(parents=True, exist_ok=True)
+            with classes_path.open("w") as fh:
+                yaml.safe_dump(
+                    {"classes": [str(c) for c in label_encoder.classes_]}, fh
+                )
+            mlflow.log_artifact(str(classes_path))
         log.info("Logged MLflow run: %s", run.info.run_id)
 
     return 0
