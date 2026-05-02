@@ -6,9 +6,9 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после полного DVC pipeline —
-featurize → train → evaluate, Этап 5 закрыт)
-**HEAD git:** новый коммит после `e7af593` (DVC pipeline expansion)
+**Последнее обновление:** 2026-05-02 (после Этапа 5 + кода Этапа 8;
+Docker не установлен — нужен интерактивный sudo)
+**HEAD git:** `3fc2479` (`origin/main`, всё запушено)
 **Текущая ветка:** `main`
 
 ---
@@ -65,9 +65,92 @@ featurize → train → evaluate, Этап 5 закрыт)
 | 5. DVC pipeline | ✅ | 5 стадий: ingest → split → featurize → train → evaluate; `dvc repro` от raw до метрик одной командой; `dvc metrics show` сравнивает val+test |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
 | 7. Научные эксперименты | ✅ ЗАКРЫТА | binary 8 runs (plateau F1 0.63); cause 5 runs (C1-C5, plateau macro_f1 0.36); scored test dataset + README собраны |
-| **8. FastAPI + Docker** | ⏭️ **СЛЕДУЮЩИЙ** | docker сам ставлю; план в верхушке файла |
+| **8. FastAPI + Docker** | ⏳ partial | код готов и протестирован локально (FastAPI 4 ручки, registry, Dockerfile×2, compose); ждёт установку Docker — см. блок ниже |
 | 9. Мониторинг + feedback loop | ❌ не начато | — |
 | 10. Демонстрация end-to-end | ❌ не начато | — |
+
+---
+
+## 🚧 Этап 8 — что сделано и что блокирует
+
+### Готово в коде (в git, протестировано локально через TestClient)
+
+- `src/models/registry.py` — Run #6 + C5 зарегистрированы как
+  `flight-delay-binary` v1 и `flight-delay-cause` v1 в локальном
+  MLflow registry (file backend `mlruns/`).
+- `src/api/schemas.py` — Pydantic схемы (FlightFeatures с 30 полями,
+  DelayPrediction, CausePrediction, ModelInfo, HealthResponse).
+- `src/api/inference.py` — ModelStore грузит обе модели в память при
+  старте; читает `MLFLOW_TRACKING_URI` из env (для Docker), fallback
+  на params.yaml (для dev).
+- `src/api/main.py` — FastAPI app с 4 ручками:
+  - `GET /health` → `{status: ok, binary_loaded, cause_loaded}`
+  - `GET /model/info` → версии, run_id, git_commit, dvc_data_hash, метрики
+  - `POST /predict/delay` → `{is_delayed, delay_probability}`
+  - `POST /predict/cause` → `{predicted_cause, class_probabilities}`
+- `docker/api.Dockerfile` — multi-stage на python:3.11-slim, healthcheck
+  на /health, только inference-deps (~500 МБ меньше чем full deps).
+- `docker/mlflow.Dockerfile` — file backend на /mlflow/mlruns
+  (bind-mount хост-директории).
+- `docker-compose.yml` — mlflow + api с `depends_on: service_healthy`.
+
+### Локальный smoke (без Docker — через TestClient)
+
+```bash
+source .venv/bin/activate
+python -c "
+from src.api.main import app
+from fastapi.testclient import TestClient
+with TestClient(app) as c:
+    print(c.get('/health').json())
+    print(c.get('/model/info').json())
+"
+```
+Проверено: обе модели загружаются, predict_delay отдаёт probability=0.88
+на тестовом payload SVO→LED A320, predict_cause — argmax weather=0.57.
+
+### ⚠️ Блок — Docker не установлен (нужен sudo)
+
+`brew install --cask docker` начал ставить Docker Desktop, скачал и
+скопировал `Docker.app` в `/Applications`, но упал на шаге линковки
+CLI плагинов в `/usr/local/cli-plugins`:
+
+```
+sudo: a terminal is required to read the password
+```
+
+Этот путь — системный, требует sudo для создания. Cask откатил установку.
+
+**Что нужно сделать пользователю** (один раз):
+
+Вариант A — пре-создать директорию (рекомендуется):
+```bash
+sudo mkdir -p /usr/local/cli-plugins
+sudo chown $(whoami) /usr/local/cli-plugins
+brew install --cask docker
+open -a Docker          # принять лицензию в GUI
+# подождать пока daemon поднимется
+docker info             # должно вернуть нормальный вывод без error
+```
+
+Вариант B — поставить Docker Desktop из .dmg вручную:
+1. Скачать Docker Desktop с https://www.docker.com/products/docker-desktop/
+2. Перетащить `Docker.app` в `/Applications`
+3. Запустить, принять лицензию, дождаться зелёного индикатора
+4. `docker info` для проверки
+
+После любого из вариантов следующая сессия Claude может выполнить:
+```bash
+cd /Users/georgij/Projects/ВКР2
+docker compose up --build
+# В другом терминале:
+curl -s http://localhost:8000/health | jq
+curl -s -X POST http://localhost:8000/predict/delay \
+  -H 'Content-Type: application/json' \
+  -d @docs/sample_flight.json | jq
+```
+
+И на этом Этап 8 закроется полностью.
 
 ---
 
