@@ -57,7 +57,7 @@ features:
 
 train:
   # Active model name — switched per run for the model-comparison demo axis.
-  active_model: logreg
+  active_model: xgboost
   available_models:
     - logreg
     - random_forest
