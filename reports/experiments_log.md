@@ -345,3 +345,112 @@ md5 raw-датасета), `feature_set`, `model`, `task`, `params_version`.
   ровно ту же data → model → tuning цепочку, но на причине задержки.
   Требует доработки `train.py` (сейчас падает на task != "delay_binary")
   и `evaluate.py` (нужна `multiclass_classification_metrics`).
+  → **запущена** ниже как Cause series (C1-C4).
+
+---
+
+# Cause Series — голова B (`task = delay_cause`)
+
+Параллельная серия для второй заявленной в теме ВКР задачи —
+**мультиклассовая классификация причины задержки**. Семь классов:
+`none`, `weather`, `carrier_operational`, `reactionary`,
+`airport_congestion`, `cancelled`, `security`. Дисбаланс train:
+**75.5 % none / 8.4 % weather / 7.7 % carrier / 3.7 % reactionary /
+3.7 % congestion / 0.6 % cancelled / 0.3 % security.**
+
+Валидация — тот же time-based slice Jan–Jun 2025 (n=36 310, **в т.ч.
+отменённые**, в отличие от binary-серии — для cause-головы класс
+`cancelled` несёт сигнал и должен оставаться). Random seed 42 везде.
+**Headline-метрика — `macro_f1`** (равный вес каждого класса, не даёт
+доминирующему `none` маскировать провалы по причинам).
+
+## Сводная таблица — Cause series
+
+| # | mlflow run_id | git_commit | feature_set | model | accuracy | **macro_f1** | weighted_f1 | macro_prec | macro_rec | roc_auc_ovr |
+|---|---|---|---|---|---|---|---|---|---|---|
+| C1 | `faae4868` | `9ab4f8a` | basic (17) | logreg + class_weight | 0.194 | **0.137** | 0.239 | 0.206 | 0.314 | 0.670 |
+| C2 | `fd12e644` | `0cbbf8a` | extended (20) | logreg + class_weight | 0.331 | **0.259** | 0.404 | 0.280 | 0.430 | 0.761 |
+| C3 | `6b948e3a` | `0cbbf8a` | with_weather (30) | logreg + class_weight | 0.396 | **0.310** | 0.473 | 0.314 | 0.488 | 0.827 |
+| C4 | `5520b46a` | `4ad72c5` | with_weather (30) | xgboost + balanced sw | **0.655** | **0.359** | **0.681** | 0.338 | 0.452 | 0.830 |
+
+## Дельты — что меняли → что получили
+
+### Δ-C1.  C1 → C2 — добавили каскадные/congestion-фичи
+
+`features.active_set: basic → extended`. Модель и сид — те же.
+
+| метрика | C1 | C2 | Δ |
+|---|---|---|---|
+| macro_f1 | 0.137 | **0.259** | **+0.122 (+89 %)** |
+| accuracy | 0.194 | 0.331 | +0.137 |
+| weighted_f1 | 0.239 | 0.404 | +0.165 |
+| roc_auc_ovr | 0.670 | 0.761 | +0.091 |
+
+**Вывод:** в cause-серии Δ1 ещё крупнее, чем в binary (89 % vs 21 % по
+headline-метрике). Логично: `inbound_delay_minutes` и congestion-индексы
+напрямую разделяют `reactionary` от `carrier_operational` и
+`airport_congestion` — то, что logreg на голых фичах расписания
+вообще не видит.
+
+### Δ-C2.  C2 → C3 — добавили погодные фичи
+
+`features.active_set: extended → with_weather`.
+
+| метрика | C2 | C3 | Δ |
+|---|---|---|---|
+| macro_f1 | 0.259 | **0.310** | **+0.051 (+19.7 %)** |
+| accuracy | 0.331 | 0.396 | +0.065 |
+| weighted_f1 | 0.404 | 0.473 | +0.069 |
+| roc_auc_ovr | 0.761 | 0.827 | +0.066 |
+
+**Вывод:** погода даёт второй шаг на cause-голове ровно так же, как и
+на binary — даже немного слабее. Сюжет: класс `weather` теперь стал
+хоть как-то отделимым от `none`, что и дало основной вклад в дельту.
+
+### Δ-C3.  C3 → C4 — поменяли модель: logreg → xgboost (defaults + balanced sample weights)
+
+`train.active_model: logreg → xgboost`. Признаки и сид — те же.
+`compute_sample_weight('balanced')` подаётся через
+`fit_params['estimator__sample_weight']` — это multiclass-аналог
+`scale_pos_weight` (последний XGBoost игнорирует на multiclass).
+
+| метрика | C3 (logreg) | C4 (xgboost) | Δ |
+|---|---|---|---|
+| accuracy | 0.396 | **0.655** | **+0.259 (+65 %)** |
+| weighted_f1 | 0.473 | **0.681** | **+0.208 (+44 %)** |
+| macro_f1 | 0.310 | **0.359** | +0.049 (+16 %) |
+| macro_precision | 0.314 | 0.338 | +0.024 |
+| macro_recall | 0.488 | 0.452 | −0.036 |
+| roc_auc_ovr | 0.827 | 0.830 | +0.003 (паритет) |
+
+**Главное наблюдение:** ROC-AUC одинаковый — обе модели **одинаково
+хорошо ранжируют** причины. Прирост xgboost живёт в
+**decision-boundary calibration** на доминирующем классе `none`,
+поэтому accuracy и weighted_f1 растут резко (+65 % / +44 %), а
+macro_f1 — гораздо умереннее (+16 %). macro_recall даже слегка падает
+из-за того, что модель чуть охотнее предсказывает `none`.
+
+**Сюжет для главы 3:** на multiclass-задаче с длинным хвостом
+(`security` 0.3 %, `cancelled` 0.6 %) macro-метрики живут отдельно от
+weighted-метрик. Headroom для cause-головы — **именно в хвосте**:
+ансамбли one-vs-rest, SMOTE по редким классам, или явная
+двухступенчатая модель «есть ли причина → какая именно». Дальнейший
+тюнинг xgboost (Optuna, аналог Run #6/#8) даст ≤+5 пунктов macro_f1
+без вмешательства в данные — это меньшая дельта, чем смена данных
+(+19 % от Δ-C2) и сильно меньшая, чем смена данных в начале серии
+(+89 % от Δ-C1).
+
+## Что дальше для cause series
+
+- **C5 — Optuna для xgboost на cause:** аналог Run #6, должен дать
+  ещё +3-5 пунктов macro_f1. `tune.py` сейчас бинарный → доработать
+  под `--task delay_cause`.
+- **C6 — двухступенчатая постановка:** сначала бинарный «causal vs
+  none» (на всём датасете), потом мультиклассовый «какая причина»
+  (только на causal). Логически аналогична human-baseline и часто
+  выигрывает 5-10 пунктов macro_f1 на задачах с доминирующим
+  «нулевым» классом.
+- **Финальный артефакт — scored test dataset (см. memory):** после
+  выбора лидеров binary и cause голов — единый parquet с колонками
+  `predicted_delay`, `delay_proba`, `predicted_cause`, `cause_proba`
+  на test split.
