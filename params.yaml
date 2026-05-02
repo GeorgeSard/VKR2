@@ -57,7 +57,7 @@ features:
 
 train:
   # Active model name — switched per run for the model-comparison demo axis.
-  active_model: lightgbm
+  active_model: logreg
   available_models:
     - logreg
     - random_forest
@@ -99,7 +99,7 @@ train:
   #   delay_binary   — will the flight be delayed >15 min (head A, classification)
   #   delay_minutes  — how many minutes (head A, regression)
   #   delay_cause    — which cause class (head B, multi-class)
-  task: delay_binary
+  task: delay_cause
 
 mlflow:
   # File backend for the baseline phase: no server needed, mlruns/ holds
