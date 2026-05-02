@@ -152,30 +152,53 @@
 
 ## 5. Как запустить (с нуля)
 
-### Первый раз
+### Два независимых «стека» — какой когда нужен
+
+В проекте **два контура**, они нужны для разных вещей и **запускаются по-разному**. Не перепутай — это самая частая ошибка.
+
+| Контур | Чем поднимается | Для чего |
+|---|---|---|
+| **Локальный Python (`.venv`)** | `source .venv/bin/activate` | Обучение моделей, DVC pipeline, эксперименты, запуск demo-скриптов, чтение parquet'ов |
+| **Docker-стек (`docker compose`)** | `cd /tmp/vkr2-build && docker compose up -d` | Сервинг готовой модели через FastAPI + MLflow UI |
+
+Они **независимы и могут работать одновременно**: локально ты экспериментируешь и обучаешь → когда модель хороша, регистрируешь её в MLflow Registry → Docker-API подхватит при следующем рестарте контейнера.
+
+### Первый раз — установка
+
 ```bash
-# 1. Клон и зависимости
+# 1. Клон
 git clone https://github.com/GeorgeSard/VKR2.git
 cd VKR2
+
+# 2. Локальный venv для тренировок и DVC
 uv venv && source .venv/bin/activate
 uv pip install -e .
 
-# 2. Подтянуть данные через DVC
+# 3. Подтянуть данные через DVC (положит parquet в data/raw/)
 dvc pull
 
-# 3. Поднять Docker-стек (кириллица в пути ломает BuildKit → симлинк)
+# 4. Подтянуть Docker (если ещё нет): открой Docker Desktop и дождись зелёного daemon
+
+# 5. Поднять Docker-стек для API
+#    Кириллица в пути ВКР2 ломает BuildKit, обходим через ASCII-симлинк
 ln -sfn "$PWD" /tmp/vkr2-build
 cd /tmp/vkr2-build
 docker compose up -d
 
-# 4. Проверка
-curl -s http://localhost:8000/health    # {"status":"ok",...}
+# 6. Проверка обоих контуров
+curl -s http://localhost:8000/health    # API → {"status":"ok",...}
+.venv/bin/python -c "import mlflow; print(mlflow.__version__)"   # локальный venv
 ```
 
 ### Каждая следующая сессия
+
 ```bash
+# Если нужен только API (чтобы потыкать ручки или показать комиссии)
 cd /tmp/vkr2-build && docker compose up -d
-# браузер: http://localhost:8000/docs (API), http://localhost:5001 (MLflow)
+# Открыть в браузере: http://localhost:8000/docs (API), http://localhost:5001 (MLflow UI)
+
+# Если будешь обучать / запускать эксперименты — параллельно активируй venv
+cd /Users/georgij/Projects/ВКР2 && source .venv/bin/activate
 ```
 
 ---
@@ -398,7 +421,150 @@ python -m src.models.tune --task delay_cause --model xgboost  # cause head
 
 ---
 
-## 8. Где смотреть результаты
+## 8. Как обучить модель (на дефолтных или своих данных)
+
+### Сценарий A — на текущем датасете (тот, что в DVC remote)
+
+Самый частый случай: ты ничего не меняешь в данных, только хочешь перепрогнать обучение или попробовать другую модель / набор фичей.
+
+```bash
+# 1. Активируй venv (Docker-стек тут НЕ нужен — обучение идёт в локальном Python)
+cd /Users/georgij/Projects/ВКР2 && source .venv/bin/activate
+
+# 2. Убедись что данные на месте
+ls data/raw/                # должен быть flight_delays_ru.parquet
+# если пусто — dvc pull
+
+# 3. (опционально) Поправь params.yaml — например, active_model: lightgbm
+
+# 4. Запусти полный пайплайн через DVC
+dvc repro
+
+# Эквивалент без DVC (для разовой пробы):
+python -m src.models.train
+```
+
+`dvc repro` выполнит стадии: `ingest → split → featurize → train → evaluate`. Каждая логирует своё в MLflow автоматически.
+
+### Сценарий B — на твоих собственных данных
+
+Есть **два варианта**, в зависимости от того, насколько твой датасет похож на текущий.
+
+#### B1. Твой parquet в той же схеме (68 колонок, см. `DATA_DICTIONARY.md`)
+
+```bash
+# 1. Положи свой файл по тому же пути (имя то же)
+cp /path/to/your_flights.parquet data/raw/flight_delays_ru.parquet
+
+# 2. Перепрогон
+dvc repro
+
+# 3. Зафиксировать новую версию данных в DVC
+dvc add data/raw/flight_delays_ru.parquet
+dvc push   # положит файл в local-storage, .dvc-метаданные пойдут в git
+git add data/raw/flight_delays_ru.parquet.dvc params.yaml
+git commit -m "data: switch to my dataset, retrain"
+```
+
+Требования к схеме (минимум):
+- Колонка `flight_id` (уникальный ключ)
+- Колонки расписания: `flight_date`, `scheduled_departure_local`, `scheduled_arrival_local`
+- Целевые: `is_departure_delayed_15m` (0/1), `dep_delay_minutes` (число), `probable_delay_cause` (строка из 7 классов)
+- Все 28 фичей, что перечислены в `src/api/schemas.py::FlightFeatures` (это те же колонки, что принимает API)
+
+Если каких-то колонок нет — `dvc repro` упадёт на стадии `ingest` или `featurize` с понятной ошибкой про missing column.
+
+#### B2. Твой датасет в другой схеме (произвольный CSV/parquet)
+
+Тогда нужно либо:
+- **Адаптировать данные под схему проекта** (переименовать колонки, добавить недостающие как заглушки) — самый быстрый путь;
+- **Или поправить `src/data/ingest.py`** под свою схему + обновить `src/features/feature_sets.py` — это уже отдельная работа, не пять минут.
+
+Для проверки концепции рекомендую **B1**: подгони свой файл под текущую схему.
+
+#### B3. Сгенерировать новый синтетический датасет (для теста)
+
+Если просто хочется убедиться что цикл работает на «свежих» данных:
+```bash
+python -m src.data.generate --rows 50000 --seed 100 --out data/raw/flight_delays_ru.parquet
+dvc repro
+```
+Получишь новый снапшот данных + перепрогон всего пайплайна → новые метрики.
+
+### Что произойдёт при `dvc repro`
+
+```
+✓ ingest      raw parquet → data/interim/flight_delays_clean.parquet
+✓ split       train/val/test parquet'ы по датам
+✓ featurize   X/y матрицы под выбранный feature_set + manifest
+✓ train       обучение модели → models/dvc_model.pkl + reports/val_metrics.json
+✓ evaluate    оценка на test → reports/test_metrics.json + confusion_matrix.csv
+```
+
+Каждая стадия запускается **только если её входы или params изменились** (DVC хранит хэши в `dvc.lock`). Если ты поправил только `train.active_model`, ingest и split не перезапустятся — экономия времени.
+
+### Где увидеть результат обучения
+
+После `dvc repro` метрики появляются в **трёх местах одновременно** (это намеренно — каждое для своей задачи):
+
+| Где | Что показывает | Как открыть |
+|---|---|---|
+| **Файлы в `reports/`** | val + test метрики свежего прогона | `cat reports/test_metrics.json` |
+| **`dvc metrics show`** | те же метрики таблицей в терминале | `dvc metrics show` |
+| **`dvc metrics diff`** | дельта от предыдущего git-коммита | `dvc metrics diff HEAD~1 HEAD` |
+| **MLflow UI** | детальный run: параметры, артефакты, plots | http://localhost:5001 → experiment `flight-delay-mlops` |
+| **Свежий scored dataset (Excel)** | предсказания обеих голов на каждом test-рейсе с маркерами правильности | `python -m src.models.score_dataset` → `reports/scored_test_dataset.xlsx` |
+
+**Если MLflow UI не запущен** (например, ты не поднимал Docker-стек):
+```bash
+mlflow ui --backend-store-uri "file:$PWD/mlruns" --host 127.0.0.1 --port 5050
+# открыть http://127.0.0.1:5050
+```
+
+### Зарегистрировать новую модель в Registry, чтобы её подхватил API
+
+После хорошего эксперимента:
+```bash
+# 1. Найди run_id своего лучшего прогона в MLflow UI
+# 2. Поправь src/models/registry.py — там в RUN_IDS прописать новый run_id
+# 3. Запусти регистрацию
+python -m src.models.registry
+# → создастся flight-delay-binary v2 (или v3, v4...)
+
+# 4. Перезапусти API контейнер чтобы он подхватил свежую версию
+cd /tmp/vkr2-build && docker compose restart api
+curl -s http://localhost:8000/model/info    # увидишь "version": "2"
+```
+
+### Краткая шпаргалка: «полный цикл за один присест»
+
+```bash
+source .venv/bin/activate
+
+# Поменять параметры эксперимента
+vim params.yaml                  # например, active_model: lightgbm
+
+# Перепрогнать
+dvc repro
+
+# Посмотреть метрики в терминале
+dvc metrics show
+
+# Посмотреть в MLflow UI
+open http://localhost:5001       # уже поднят через docker compose
+
+# Если результат хорош — закоммитить
+git add params.yaml dvc.lock reports/*.json
+git commit -m "experiment: lightgbm with with_weather, F1 0.629"
+
+# И зарегистрировать как новую версию для API
+python -m src.models.registry
+docker compose -f /tmp/vkr2-build/docker-compose.yml restart api
+```
+
+---
+
+## 9. Где смотреть результаты
 
 | Что | Где |
 |---|---|
@@ -414,7 +580,7 @@ python -m src.models.tune --task delay_cause --model xgboost  # cause head
 
 ---
 
-## 9. Главные результаты для защиты
+## 10. Главные результаты для защиты
 
 ### Доказанная гипотеза руководителя
 
@@ -450,7 +616,7 @@ python -m src.models.tune --task delay_cause --model xgboost  # cause head
 
 ---
 
-## 10. Что осталось вне scope (намеренно)
+## 11. Что осталось вне scope (намеренно)
 
 - **Главы 1-2 ВКР** (предметная область + state of the art) — текстовая часть, не код
 - **Catboost тюнинг** — два других бустинга показали plateau, дополнительная библиотека ничего не докажет
