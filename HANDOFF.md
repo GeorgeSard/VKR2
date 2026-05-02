@@ -6,10 +6,10 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (Этап 5 закрыт, код Этапа 8 готов;
-Docker CLI 29.4.1 + daemon `desktop-linux` работают — пользователь
-проверил `docker ps` / `docker info`, всё ок)
-**HEAD git:** `ffca76c` (`origin/main`, всё запушено)
+**Последнее обновление:** 2026-05-03 (Этап 8 ЗАКРЫТ — docker compose
+поднят, обе модели грузятся в api из MLflow Registry, все 4 ручки
+отработали с теми же значениями что в локальном TestClient-смоке)
+**HEAD git:** см. `git log -1` — последний коммит закрывает Stage 8
 **Текущая ветка:** `main`
 
 ---
@@ -21,81 +21,26 @@ Docker CLI 29.4.1 + daemon `desktop-linux` работают — пользова
    См. секцию «🧬 DVC pipeline» ниже + `reports/DVC_SCREENSHOTS_GUIDE.md`.
 2. **Этап 7 (научные эксперименты) ЗАКРЫТ**: 13 runs, plateau на обеих
    головах, scored test dataset собран.
-3. **Этап 8 — код готов и протестирован локально.** Файлы в git:
-   `src/models/registry.py`, `src/api/{schemas,inference,main}.py`,
-   `docker/api.Dockerfile`, `docker/mlflow.Dockerfile`, `docker-compose.yml`.
-   Run #6 + C5 зарегистрированы в MLflow Registry как `flight-delay-binary` /
-   `flight-delay-cause` v1. Локальный smoke через TestClient: все 4 ручки
-   работают.
-4. **Docker готов к работе:** CLI 29.4.1, daemon `desktop-linux` отвечает
-   (`docker ps` возвращает пустую таблицу без ошибок, `docker info`
-   показывает Plugins:agent/ai от Docker Desktop). Всё, можно билдить.
-5. **Что Claude должен сделать в начале следующей сессии — пошагово:**
+3. **Этап 8 (FastAPI + Docker) ЗАКРЫТ.** `docker compose up -d` поднимает
+   mlflow + api за минуту, обе модели грузятся из MLflow Registry
+   (`flight-delay-binary` v1, `flight-delay-cause` v1), все 4 ручки
+   возвращают те же значения что локальный TestClient. Подробности и
+   воспроизведение — в блоке «✅ Этап 8» ниже.
+4. **Что делать в начале следующей сессии:**
    ```bash
-   cd /Users/georgij/Projects/ВКР2
-
-   # Шаг 1: сборка образов (первый раз ~3-5 мин: качается python:3.11-slim,
-   #         устанавливаются inference-deps через uv в api-образ)
-   docker compose build
-
-   # Шаг 2: подъём стека в фоне
-   docker compose up -d
-
-   # Шаг 3: проверка статуса (через 20-30 сек оба должны быть healthy)
-   docker compose ps
-
-   # Шаг 4: посмотреть startup-логи api — там видно загрузку моделей
-   #         из MLflow registry (ожидаем 2 строки "Loading flight-delay-...")
-   docker compose logs api | tail -30
-
-   # Шаг 5: smoke-тест ручек
-   curl -s http://localhost:8000/health | jq
-   # ожидаем: {"status":"ok","binary_loaded":true,"cause_loaded":true}
-
-   curl -s http://localhost:8000/model/info | jq
-   # ожидаем: версии 1, run_id обоих лидеров, git_commit, dvc_data_hash
-
-   # POST на бинарную голову (пример рейса SVO→LED A320)
-   curl -s -X POST http://localhost:8000/predict/delay \
-     -H 'Content-Type: application/json' \
-     -d '{
-       "month":7,"day_of_week":3,"scheduled_dep_hour":14,
-       "scheduled_dep_minute":30,"is_weekend":0,"is_holiday_window":0,
-       "quarter":3,"distance_km":2300,"planned_block_minutes":195,
-       "airline_fleet_avg_age":12.5,"origin_hub_tier":1,"destination_hub_tier":2,
-       "inbound_delay_minutes":0,"origin_congestion_index":0.45,
-       "destination_congestion_index":0.32,"origin_temperature_c":18,
-       "origin_precip_mm":0,"origin_visibility_km":10,"origin_wind_mps":3.5,
-       "destination_temperature_c":22,"destination_precip_mm":0,
-       "destination_visibility_km":10,"destination_wind_mps":2.8,
-       "airline_code":"SU","aircraft_family":"A320","origin_iata":"SVO",
-       "destination_iata":"LED","route_group":"domestic_trunk",
-       "origin_weather_severity":"calm","destination_weather_severity":"calm"
-     }' | jq
-   # ожидаем: is_delayed=true, delay_probability~0.88
-   #         (ровно те же значения что в TestClient-смоке локально)
+   ln -sfn /Users/georgij/Projects/ВКР2 /tmp/vkr2-build && cd /tmp/vkr2-build
+   docker compose up -d            # стек уже собран, поднимется за 30 сек
+   curl -s http://localhost:8000/health           # sanity
+   open http://localhost:8000/docs                # Swagger для скрина
+   open http://localhost:5001                     # MLflow UI
    ```
-6. **После успешного смока:**
-   - Открыть http://localhost:8000/docs (Swagger UI) — заскринить для отчёта
-     («Рисунок N. Auto-generated API documentation, FastAPI + Pydantic»)
-   - Открыть http://localhost:5000 — это контейнерный MLflow с теми же
-     14 runs (через bind-mount `./mlruns:/mlflow/mlruns`)
-   - Финальный коммит `feat(stage8): docker compose smoke validated +
-     swagger screenshot`
-   - Обновить таблицу «Где мы по плану» — Этап 8 → ✅
-   - Возможные follow-up задачи (если останется время):
-     - Этап 9 — Prometheus + structured logging (есть пустая папка
-       `src/monitoring/`)
-     - Этап 10 — финальный end-to-end демо-скрипт с замыканием feedback
-       loop
-7. **Если что-то пойдёт не так на сборке:**
-   - Самая вероятная проблема — `pyproject.toml` или `uv` версия.
-     Сейчас в Dockerfile прибит `ghcr.io/astral-sh/uv:0.5.11`. Если
-     релизы поменяются — переключить на `0.11.x` или последний.
-   - Если api контейнер падает на startup с ошибкой загрузки моделей —
-     проверить, что bind-mount `./mlruns` правильно подцепился: внутри
-     mlflow контейнера должно быть `/mlflow/mlruns/897053182602335678/`
-     с 14 директориями run-id.
+5. **Возможные следующие задачи (по плану CLAUDE.md §7):**
+   - **Этап 9** — Prometheus + structured logging. Пустая папка
+     `src/monitoring/` ждёт. Минимум: prometheus_client middleware на
+     latency/request count + json-logger на каждый predict с request_id.
+   - **Этап 10** — end-to-end демо-скрипт замыкания feedback loop:
+     POST /feedback → запись в parquet → DVC commit → сценарий
+     переобучения через `dvc repro`.
 6. **Гайды для отчёта (готовые к скринам):**
    - `reports/DVC_SCREENSHOTS_GUIDE.md` — 7 скринов про DVC + сценарий
      «изменили данные → метрика изменилась» (через `dvc metrics diff`)
@@ -115,15 +60,53 @@ Docker CLI 29.4.1 + daemon `desktop-linux` работают — пользова
 | 5. DVC pipeline | ✅ | 5 стадий: ingest → split → featurize → train → evaluate; `dvc repro` от raw до метрик одной командой; `dvc metrics show` сравнивает val+test |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
 | 7. Научные эксперименты | ✅ ЗАКРЫТА | binary 8 runs (plateau F1 0.63); cause 5 runs (C1-C5, plateau macro_f1 0.36); scored test dataset + README собраны |
-| **8. FastAPI + Docker** | ⏳ partial | код готов и протестирован локально (FastAPI 4 ручки, registry, Dockerfile×2, compose); ждёт установку Docker — см. блок ниже |
-| 9. Мониторинг + feedback loop | ❌ не начато | — |
-| 10. Демонстрация end-to-end | ❌ не начато | — |
+| **8. FastAPI + Docker** | ✅ ЗАКРЫТ | docker compose up поднимает mlflow + api; обе модели грузятся из Registry через bind-mount; smoke `curl /health`, `/model/info`, `POST /predict/{delay,cause}` дают те же значения, что локальный TestClient |
+| 9. Мониторинг + feedback loop | ❌ не начато | пустая `src/monitoring/` ждёт Prometheus + structured logging |
+| 10. Демонстрация end-to-end | ❌ не начато | финальный демо-скрипт замыкания feedback loop |
 
 ---
 
-## 🚧 Этап 8 — что сделано и что блокирует
+## ✅ Этап 8 — закрыт, как поднимается стек и какие были грабли
 
-### Готово в коде (в git, протестировано локально через TestClient)
+### Команды для воспроизведения (mlflow + api за одну команду)
+
+```bash
+# Кириллица в пути ВКР2 ломает Docker BuildKit
+# (header session-key non-printable ASCII).
+# Обходим через ASCII-симлинк:
+ln -sfn /Users/georgij/Projects/ВКР2 /tmp/vkr2-build
+cd /tmp/vkr2-build
+
+docker compose build --progress=plain    # ~3 мин на первый раз
+docker compose up -d                      # mlflow healthy → api starts
+docker compose ps                         # оба в статусе healthy
+
+# Smoke
+curl -s http://localhost:8000/health           # {"status":"ok",...}
+curl -s http://localhost:8000/model/info       # обе модели v1 + run_id + git_commit + метрики
+curl -s -X POST http://localhost:8000/predict/delay -H 'Content-Type: application/json' -d @payload.json
+# → is_delayed=true, delay_probability=0.8836 (совпадает с TestClient)
+
+# UI
+open http://localhost:8000/docs    # Swagger UI — заскринить для главы 4
+open http://localhost:5001/        # MLflow UI (контейнерный, host port 5001 — см. ниже про AirPlay)
+```
+
+### Грабли, на которые наступили (зафиксировано в compose)
+
+1. **Кириллица в пути → BuildKit падает** с `non-printable ASCII characters
+   in x-docker-expose-session-sharedkey`. Обход — собирать через
+   `/tmp/vkr2-build` симлинк.
+2. **macOS AirPlay Receiver занимает порт 5000.** В compose host-порт
+   mlflow перевешен на `5001:5000`. Контейнер-внутри по-прежнему 5000,
+   api ходит на `http://mlflow:5000` через docker DNS.
+3. **Registry хранит artifact URI как абсолютный host-путь**
+   (`/Users/georgij/Projects/ВКР2/mlruns/...`), которого внутри api
+   контейнера не было. Добавлен второй bind-mount в api:
+   `./mlruns:/Users/georgij/Projects/ВКР2/mlruns` (rw, потому что mlflow
+   при загрузке из registry пишет `registered_model_meta` в artifact tree).
+
+### Файлы и ручки (всё в git, всё проверено через docker compose)
 
 - `src/models/registry.py` — Run #6 + C5 зарегистрированы как
   `flight-delay-binary` v1 и `flight-delay-cause` v1 в локальном
@@ -144,106 +127,28 @@ Docker CLI 29.4.1 + daemon `desktop-linux` работают — пользова
   (bind-mount хост-директории).
 - `docker-compose.yml` — mlflow + api с `depends_on: service_healthy`.
 
-### Локальный smoke (без Docker — через TestClient)
+### Прогон ручек (фактический ответ контейнерного api, 2026-05-03)
 
-```bash
-source .venv/bin/activate
-python -c "
-from src.api.main import app
-from fastapi.testclient import TestClient
-with TestClient(app) as c:
-    print(c.get('/health').json())
-    print(c.get('/model/info').json())
-"
 ```
-Проверено: обе модели загружаются, predict_delay отдаёт probability=0.88
-на тестовом payload SVO→LED A320, predict_cause — argmax weather=0.57.
-
-### ✅ Docker CLI установлен | ⚠️ daemon ещё не запущен
-
-Состояние на конец этой сессии:
-```
-$ docker info
-Client:
- Version:    29.4.1
- Context:    default
-Server:
-failed to connect to the docker API at unix:///var/run/docker.sock
+GET /health           → {"status":"ok","binary_loaded":true,"cause_loaded":true}
+GET /model/info       → binary v1 (run 4227cd7b, git b3dc9c8, F1 0.630)
+                        cause  v1 (run 400b6695, git 0632ef7, macro_f1 0.361)
+POST /predict/delay   → is_delayed=true, delay_probability=0.8836
+POST /predict/cause   → predicted_cause=weather (0.5691), none (0.2564),
+                        carrier_operational (0.1536), …
 ```
 
-Это означает: Docker CLI поставлен, но Docker Desktop приложение не
-запущено, поэтому daemon недоступен.
+Те же значения, что были в локальном TestClient-смоке → registry +
+artifact mount работают идентично dev-режиму.
 
-**Что нужно сделать пользователю в начале следующей сессии** (один раз):
+### Что осталось сделать руками для отчёта
 
-```bash
-open -a Docker
-# подождать ~30 секунд, пока иконка кита в menu bar
-# перестанет анимироваться
-docker info     # ожидаем секцию Server: без error
-```
-
-Если Docker Desktop первый раз — попросит принять лицензию в GUI и,
-возможно, ввести пароль один раз для установки сетевых компонентов.
-
-### Что делать в следующей сессии после `docker info` зелёный
-
-Файлы готовы (см. предыдущий блок), всё закоммичено. План:
-
-1. Сборка образов (~3-5 мин на первый раз):
-   ```bash
-   cd /Users/georgij/Projects/ВКР2
-   docker compose build
-   ```
-2. Подъём стека:
-   ```bash
-   docker compose up -d
-   docker compose ps    # mlflow + api в статусе healthy
-   docker compose logs -f api    # увидеть startup-логи Загрузки моделей
-   ```
-3. Smoke-тест:
-   ```bash
-   curl -s http://localhost:8000/health | jq
-   # ожидаем: {"status":"ok","binary_loaded":true,"cause_loaded":true}
-
-   curl -s http://localhost:8000/model/info | jq
-   # ожидаем: версии, run_id, git_commit, dvc_data_hash, метрики
-
-   # POST с примером рейса
-   curl -s -X POST http://localhost:8000/predict/delay \
-     -H 'Content-Type: application/json' \
-     -d '{
-       "month":7,"day_of_week":3,"scheduled_dep_hour":14,
-       "scheduled_dep_minute":30,"is_weekend":0,"is_holiday_window":0,
-       "quarter":3,"distance_km":2300,"planned_block_minutes":195,
-       "airline_fleet_avg_age":12.5,"origin_hub_tier":1,"destination_hub_tier":2,
-       "inbound_delay_minutes":0,"origin_congestion_index":0.45,
-       "destination_congestion_index":0.32,"origin_temperature_c":18,
-       "origin_precip_mm":0,"origin_visibility_km":10,"origin_wind_mps":3.5,
-       "destination_temperature_c":22,"destination_precip_mm":0,
-       "destination_visibility_km":10,"destination_wind_mps":2.8,
-       "airline_code":"SU","aircraft_family":"A320","origin_iata":"SVO",
-       "destination_iata":"LED","route_group":"domestic_trunk",
-       "origin_weather_severity":"calm","destination_weather_severity":"calm"
-     }' | jq
-   # ожидаем: is_delayed=true, delay_probability~0.88
-   ```
-4. Открыть в браузере:
-   - http://localhost:8000/docs — Swagger UI с описанием API (для скрина в отчёт!)
-   - http://localhost:5000 — MLflow UI (контейнерная версия, видит те же 14 runs через bind-mount)
-5. **Этап 8 закроется** после успешного smoke. Останется коммит
-   `feat(stage8): docker compose smoke + screenshots` с финальным
-   скрином swagger UI.
-
-### Альтернатива на случай если Docker Desktop не пойдёт
-
-Можно использовать `colima` (легче, без GUI):
-```bash
-brew install colima
-colima start --cpu 4 --memory 6
-docker info     # должно работать через colima
-```
-Все docker-compose команды дальше идентичны.
+1. Открыть http://localhost:8000/docs — заскринить Swagger UI
+   («Рисунок N. Auto-generated API documentation, FastAPI + Pydantic»).
+2. Открыть http://localhost:5001 — контейнерный MLflow с теми же
+   13 runs + двумя registered models (для главы 4 «Внедрение»).
+3. (опционально) `docker compose ps` + `docker stats` — скрин про
+   лёгкость стека.
 
 ---
 

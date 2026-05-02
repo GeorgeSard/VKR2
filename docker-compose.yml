@@ -24,7 +24,11 @@ services:
       dockerfile: docker/mlflow.Dockerfile
     container_name: flight-delay-mlflow
     ports:
-      - "5000:5000"
+      # Host 5001 → container 5000. macOS AirPlay Receiver squats on host
+      # port 5000 by default, so we publish on 5001. Inter-container
+      # traffic still uses the service name + container port: api hits
+      # mlflow at http://mlflow:5000 (see api service env below).
+      - "5001:5000"
     volumes:
       # Bind-mount the local mlruns/ directory. All 14 existing runs
       # plus the two registered models (flight-delay-binary,
@@ -50,6 +54,13 @@ services:
       # containerised setup. src/api/inference.py prefers this env var
       # over params.yaml so we don't have to rewrite config per-env.
       MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      # Registry resolves "models:/flight-delay-*/1" to absolute artifact
+      # URIs that were recorded when the models were registered on the
+      # host (e.g. /Users/georgij/Projects/ВКР2/mlruns/...). Mount the
+      # same host path inside the container so mlflow.sklearn.load_model
+      # can read the artifact tree without re-registering on each rebuild.
+      - ./mlruns:/Users/georgij/Projects/ВКР2/mlruns
     depends_on:
       mlflow:
         condition: service_healthy
