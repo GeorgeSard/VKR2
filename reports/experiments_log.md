@@ -21,6 +21,7 @@
 | 4 | `1b00226a` | `45834a0` | with_weather (28) | xgboost (default) | 0.835 | 0.825 | 0.438 | **0.572** | **0.839** | 0.731 |
 | 5 | `a7a0ecd5` | `341e954` | with_weather (28) | xgboost (tuned) | 0.790 | 0.569 | 0.677 | **0.619** | **0.830** | 0.720 |
 | 6 | `4227cd7b` | `b3dc9c8` | with_weather (28) | xgboost (optuna) | 0.795 | 0.576 | 0.696 | **0.630** | **0.839** | 0.731 |
+| 7 | `d60d3feb` | `c419a05` | with_weather (28) | lightgbm (default) | 0.836 | 0.825 | 0.439 | **0.573** | **0.839** | 0.731 |
 
 (*В feature_set указано число признаков до one-hot.*)
 
@@ -148,16 +149,67 @@ scale_pos_weight: 2.371      # ↓ от 3.17 — менее агрессивны
 это нормальный исход и хороший сюжет: **MLOps-инструменты выжимают
 последние проценты, но основную работу делают данные** (см. Δ1).
 
+### Δ6.  Run #6 → Run #7 — поменяли boosting library: xgboost → lightgbm (defaults)
+
+**Что изменено в `params.yaml`:** `train.active_model: xgboost → lightgbm`.
+Признаки (`with_weather`, 28), сид (42), таргет (`delay_binary`) — те же.
+LightGBM-параметры — `params.yaml` defaults (`n_estimators=400`,
+`num_leaves=63`, `learning_rate=0.05`, `subsample=0.9`,
+`colsample_bytree=0.9`, **без** балансировки классов).
+
+| метрика | Run #6 (xgb optuna) | Run #7 (lgbm default) | Δ |
+|---|---|---|---|
+| accuracy | 0.795 | 0.836 | +0.041 |
+| precision | 0.576 | **0.825** | +0.249 |
+| recall | 0.696 | **0.439** | **−0.257** |
+| f1 | **0.630** | 0.573 | −0.057 (−9.0 %) |
+| roc_auc | 0.839 | 0.839 | 0.000 |
+| pr_auc | 0.731 | 0.731 | 0.000 |
+
+**Контрольное сравнение Run #4 (xgb default) vs Run #7 (lgbm default)** —
+обе модели на тех же признаках без балансировки:
+
+| метрика | Run #4 (xgb default) | Run #7 (lgbm default) | Δ |
+|---|---|---|---|
+| accuracy | 0.835 | 0.836 | +0.001 |
+| precision | 0.825 | 0.825 | 0.000 |
+| recall | 0.438 | 0.439 | +0.001 |
+| f1 | 0.572 | 0.573 | +0.001 |
+| roc_auc | 0.839 | 0.839 | 0.000 |
+| pr_auc | 0.731 | 0.731 | 0.000 |
+
+**Вывод:** на этих данных XGBoost и LightGBM с дефолтными
+гиперпараметрами и **без** балансировки классов дают практически
+идентичные результаты (разница в F1 — 0.001, ROC-AUC и PR-AUC
+совпадают до третьего знака). Это **главный сюжет дельты**: смена
+boosting-библиотеки сама по себе ≠ улучшение, потому что обе
+библиотеки оптимизируют одно и то же логистическое правдоподобие
+на одних и тех же фичах и при том же дисбалансе 76/24 «вырождаются»
+в одинаковую precision-приоритетную точку. Прирост Run #5/#6 над
+Run #4 (+0.047 → +0.058 F1) пришёл **не от XGBoost**, а от
+`scale_pos_weight=3.17` и подбора параметров — поэтому честный
+следующий шаг для LightGBM это `class_weight='balanced'` (или
+`is_unbalance=True`) + Optuna, что и запланировано как Run #8.
+
+Полезное методологическое наблюдение для главы 3: **«поменяли
+модель → метрики не сдвинулись» — это не отрицательный результат,
+а доказательство, что узкое место не в модели, а в обработке
+дисбаланса**. Соответствует тезису руководителя: «если перебор
+параметров ничего не даёт — проблема в датасете».
+
 ## Снимок прогресса по F1 и ROC-AUC
 
 ```
-Run #  feature_set    model            f1     roc_auc
-  1    basic          logreg          0.450    0.665      ┐
-  2    extended       logreg          0.543    0.766      │  data axis
-  3    with_weather   logreg          0.606    0.825      ┘
-  4    with_weather   xgboost         0.572    0.839      ─  model axis (raw)
-  5    with_weather   xgboost (tuned) 0.619    0.830      ─  hyperparam axis (manual)
-  6    with_weather   xgboost (optuna)0.630    0.839      ─  hyperparam axis (auto)
+Run #  feature_set    model              f1     roc_auc
+  1    basic          logreg            0.450    0.665      ┐
+  2    extended       logreg            0.543    0.766      │  data axis
+  3    with_weather   logreg            0.606    0.825      ┘
+  4    with_weather   xgboost           0.572    0.839      ┐  model axis (defaults)
+  7    with_weather   lightgbm          0.573    0.839      ┘  ≈ копия Run #4 — boosting
+                                                              library без балансировки
+                                                              классов ничего не меняет
+  5    with_weather   xgboost (tuned)   0.619    0.830      ─  hyperparam axis (manual)
+  6    with_weather   xgboost (optuna)  0.630    0.839      ─  hyperparam axis (auto)
 ```
 
 ## Что воспроизводимо и как
@@ -172,6 +224,7 @@ Run #  feature_set    model            f1     roc_auc
 | #4 | `45834a0 experiment: switch active model logreg → xgboost on with_weather features` |
 | #5 | `341e954 experiment: tune xgboost — depth 6→8, n_est 400→800, scale_pos_weight 3.17` |
 | #6 | `b3dc9c8 feat(tuning): add Optuna XGBoost tuner with single-run MLflow logging` |
+| #7 | `c419a05 experiment: switch active model xgboost → lightgbm on with_weather` |
 
 Чтобы воспроизвести любой run:
 
@@ -187,7 +240,15 @@ md5 raw-датасета), `feature_set`, `model`, `task`, `params_version`.
 
 ## Что дальше — задел для следующих итераций
 
-- **Run #7:** LightGBM на тех же признаках для сравнения с XGBoost.
-- **Run #8:** ансамбль (stacking) победителей — обычно ещё +1–2 пункта F1.
+- **Run #8:** LightGBM с балансировкой классов (`is_unbalance=True`
+  или `class_weight='balanced'`) + Optuna — честный head-to-head с
+  Run #6. Гипотеза: f1 ≈ 0.62–0.64, паритет с XGBoost.
+- **Run #9:** CatBoost на тех же фичах (с `auto_class_weights=Balanced`).
+  Часто лучший на табличке с категориями (у нас их много —
+  airline_code, airport ICAO, route, fleet_type).
+- **Run #10:** ансамбль (stacking/voting) победителей logreg + xgboost +
+  lgbm — обычно ещё +1–2 пункта F1.
 - **Серия по второй задаче (`delay_cause`, multi-class):** пройти
   ровно ту же data → model → tuning цепочку, но на причине задержки.
+  Требует доработки `train.py` (сейчас падает на task != "delay_binary")
+  и `evaluate.py` (нужна `multiclass_classification_metrics`).
