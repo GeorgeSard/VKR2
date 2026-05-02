@@ -135,9 +135,9 @@
 |---|---|---|
 | Алгоритм | XGBoost | XGBoost |
 | Набор признаков | `with_weather` (30 колонок: расписание + каскад + погода) | `with_weather` (то же самое) |
-| Гиперпараметры | Optuna 30 trials (Run #6 в MLflow) | C4 — defaults + `compute_sample_weight('balanced')` |
-| Метрика на val | F1 = 0.630, ROC-AUC = 0.839 | macro_f1 = 0.359, accuracy = 0.655 |
-| Метрика на test | accuracy = **81.9 %** на оценимых рейсах | accuracy = **70.0 %** в целом |
+| Гиперпараметры | Optuna 30 trials (Run #6 в MLflow) | Optuna 30 trials (C5 в MLflow) + `compute_sample_weight('balanced')` |
+| Метрика на val | F1 = 0.630, ROC-AUC = 0.839 | macro_f1 = 0.361, accuracy = 0.656 |
+| Метрика на test | accuracy = **81.9 %** на оценимых рейсах | accuracy = **69.6 %** в целом |
 | Random seed | 42 | 42 |
 
 **Важно:** обучение шло **только** на данных до конца июня 2025

@@ -371,7 +371,8 @@ md5 raw-датасета), `feature_set`, `model`, `task`, `params_version`.
 | C1 | `faae4868` | `9ab4f8a` | basic (17) | logreg + class_weight | 0.194 | **0.137** | 0.239 | 0.206 | 0.314 | 0.670 |
 | C2 | `fd12e644` | `0cbbf8a` | extended (20) | logreg + class_weight | 0.331 | **0.259** | 0.404 | 0.280 | 0.430 | 0.761 |
 | C3 | `6b948e3a` | `0cbbf8a` | with_weather (30) | logreg + class_weight | 0.396 | **0.310** | 0.473 | 0.314 | 0.488 | 0.827 |
-| C4 | `5520b46a` | `4ad72c5` | with_weather (30) | xgboost + balanced sw | **0.655** | **0.359** | **0.681** | 0.338 | 0.452 | 0.830 |
+| C4 | `5520b46a` | `4ad72c5` | with_weather (30) | xgboost + balanced sw | 0.655 | 0.359 | 0.681 | 0.338 | 0.452 | 0.830 |
+| C5 | `400b6695` | `0632ef7` | with_weather (30) | xgboost optuna + balanced sw | **0.656** | **0.361** | **0.682** | **0.348** | 0.449 | 0.830 |
 
 ## Дельты — что меняли → что получили
 
@@ -440,17 +441,92 @@ weighted-метрик. Headroom для cause-головы — **именно в 
 (+19 % от Δ-C2) и сильно меньшая, чем смена данных в начале серии
 (+89 % от Δ-C1).
 
+### Δ-C4.  C4 → C5 — Optuna-tuning xgboost для cause (TPE, 30 trials)
+
+**Что изменено:** обобщён `tune.py` под `--task delay_cause`
+(commit `0632ef7`), запущен `python -m src.models.tune --task
+delay_cause --model xgboost --n-trials 30`. Optuna (TPE,
+`seed=42`) перебрала шесть гиперпараметров XGBoost на multi-class
+варианте (без `scale_pos_weight` — он binary-only): `n_estimators ∈
+[200..1200]`, `max_depth ∈ [4..10]`, `learning_rate ∈ [0.01..0.2]`
+(log), `subsample ∈ [0.6..1.0]`, `colsample_bytree ∈ [0.6..1.0]`,
+`min_child_weight ∈ [1..20]`. Целевая функция — **macro_f1** на val
+(не binary f1, как для head A — для multi-class это правильная
+headline-метрика). Дисбаланс — через
+`compute_sample_weight('balanced')`, как в C4.
+
+**Найденная конфигурация (`models/best_xgboost_delay_cause_params.yaml`):**
+
+```yaml
+n_estimators: 700
+max_depth: 8
+learning_rate: 0.0782         # ↑ от 0.05 ручного — компенсирует регуляризацию
+subsample: 0.762              # ↓ от 0.9 — сильнее регуляризация
+colsample_bytree: 0.667       # ↓ от 0.9
+min_child_weight: 7           # больше сглаживания на листах
+```
+
+| метрика | C4 (defaults) | C5 (optuna) | Δ |
+|---|---|---|---|
+| accuracy | 0.6552 | 0.6562 | +0.001 |
+| macro_f1 | 0.3585 | **0.3610** | +0.0025 (+0.7 %) |
+| weighted_f1 | 0.6807 | 0.6823 | +0.0016 |
+| macro_precision | 0.338 | 0.348 | +0.010 |
+| macro_recall | 0.452 | 0.449 | −0.003 |
+| roc_auc_ovr | 0.8299 | 0.8296 | −0.0003 |
+
+**Главное наблюдение для главы 3:** **cause head тоже упёрся в plateau
+≈ macro_f1 0.36** — Optuna не пробивает потолок при том же датасете и
+тех же признаках. Это **второе независимое подтверждение** методологического
+тезиса серии: смена hyperparam-оси не двигает метрики, headroom только в
+data-оси. Ровно тот же паттерн, что Run #5 → Run #6 для binary head:
+ручной конфиг уже близок к оптимуму поиска, Optuna выжимает последние
+~1 % за 30 trials.
+
+**Параметрическая параллель** между головами (для отчёта):
+
+|  | Run #6 (binary) | C5 (cause) |
+|---|---|---|
+| n_estimators | 1000 | 700 |
+| max_depth | 7 | 8 |
+| learning_rate | 0.0138 | 0.0782 |
+| subsample | 0.739 | 0.762 |
+| colsample_bytree | 0.813 | 0.667 |
+| min_child_weight | 9 | 7 |
+
+Cause-головa предпочла **более высокий learning_rate** (0.078 vs 0.014)
+и **меньше деревьев** (700 vs 1000) — multi-class с балансировкой sample
+weights требует более резких шагов градиента, чем binary с
+`scale_pos_weight`. Полезное наблюдение для отчёта про природу task-а.
+
+## Финальная сводная таблица — обе головы
+
+### Head A (`delay_binary`) — лидер: Run #6 (XGBoost Optuna)
+- val: F1 = 0.630, ROC-AUC = 0.839
+- test: **accuracy = 81.9 %** (на оценимых, не отменённых рейсах)
+
+### Head B (`delay_cause`) — лидер: C5 (XGBoost Optuna + balanced sw)
+- val: macro_f1 = 0.361, accuracy = 0.656
+- test: **accuracy = 69.6 %** (по 7 классам)
+
+## Финальный артефакт — `reports/scored_test_dataset.{parquet,csv,xlsx}`
+
+Скрипт `python -m src.models.score_dataset` обучает обоих лидеров на
+train, скорит весь test (36 983 рейса) и пишет 21-колоночный датасет в
+3-х форматах. Содержит ground truth, предсказания обеих моделей,
+вероятности и маркеры правильности (✓/✗). Сопровождается
+`reports/SCORED_DATASET_README.md` — пошаговая инструкция для
+человека-пользователя.
+
 ## Что дальше для cause series
 
-- **C5 — Optuna для xgboost на cause:** аналог Run #6, должен дать
-  ещё +3-5 пунктов macro_f1. `tune.py` сейчас бинарный → доработать
-  под `--task delay_cause`.
 - **C6 — двухступенчатая постановка:** сначала бинарный «causal vs
   none» (на всём датасете), потом мультиклассовый «какая причина»
   (только на causal). Логически аналогична human-baseline и часто
   выигрывает 5-10 пунктов macro_f1 на задачах с доминирующим
-  «нулевым» классом.
-- **Финальный артефакт — scored test dataset (см. memory):** после
-  выбора лидеров binary и cause голов — единый parquet с колонками
-  `predicted_delay`, `delay_proba`, `predicted_cause`, `cause_proba`
-  на test split.
+  «нулевым» классом — это **единственная оставшаяся гипотеза, которая
+  реально может сдвинуть plateau** головы B без новых фичей.
+- **Новая ось данных для cause:** добавить календарные/сезонные/
+  исторические фичи специально под редкие классы (`security`,
+  `cancelled` — 0.3 % и 0.6 %). Дельта неопределённа, но это аналог
+  Δ1/Δ2 для второй головы.

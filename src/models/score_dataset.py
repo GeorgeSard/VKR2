@@ -7,8 +7,10 @@ re-runnable from any clean checkout that has data via DVC:
 
     head A (delay_binary)  — XGBoost with Run #6 Optuna config
                              (models/best_xgboost_params.yaml)
-    head B (delay_cause)   — XGBoost defaults from params.yaml
-                             with balanced sample_weight (Cause C4)
+    head B (delay_cause)   — XGBoost with Cause C5 Optuna config
+                             (models/best_xgboost_delay_cause_params.yaml)
+                             + balanced sample_weight at fit time
+                             Falls back to C4 defaults if C5 file absent.
 
 Output goes to `reports/scored_test_dataset.{parquet,csv,xlsx}`.
 The Excel and CSV variants project the dataset down to the columns a
@@ -103,10 +105,25 @@ def _train_binary_head(
     return pipeline
 
 
+def _load_xgb_cause_best() -> dict | None:
+    """Load Cause C5 Optuna best params if available; None falls back to C4 defaults."""
+    p = PROJECT_ROOT / "models" / "best_xgboost_delay_cause_params.yaml"
+    if not p.exists():
+        log.warning("Cause C5 params file not found at %s — falling back to C4 defaults", p)
+        return None
+    with p.open() as fh:
+        return yaml.safe_load(fh)
+
+
 def _train_cause_head(
     train_df: pd.DataFrame, seed: int
 ) -> tuple[Pipeline, LabelEncoder]:
-    """Head B — XGBoost multi-class cause classifier (Cause C4 config)."""
+    """Head B — XGBoost multi-class cause classifier.
+
+    Defaults to Cause C5 Optuna config; falls back to C4 hand-defaults
+    when the Optuna best-params file is absent (e.g. fresh checkout
+    before tuning has run).
+    """
     from xgboost import XGBClassifier
 
     fs = get_feature_set("with_weather")
@@ -117,17 +134,34 @@ def _train_cause_head(
     y_train_enc = label_encoder.fit_transform(y_train)
     sw = compute_sample_weight(class_weight="balanced", y=y_train_enc)
 
-    estimator = XGBClassifier(
-        n_estimators=800,
-        max_depth=8,
-        learning_rate=0.05,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        random_state=seed,
-        tree_method="hist",
-        eval_metric="mlogloss",
-        n_jobs=-1,
-    )
+    best = _load_xgb_cause_best()
+    if best is not None:
+        log.info("[head B] using C5 Optuna config: %s", best)
+        estimator = XGBClassifier(
+            n_estimators=best["n_estimators"],
+            max_depth=best["max_depth"],
+            learning_rate=best["learning_rate"],
+            subsample=best["subsample"],
+            colsample_bytree=best["colsample_bytree"],
+            min_child_weight=best["min_child_weight"],
+            random_state=seed,
+            tree_method="hist",
+            eval_metric="mlogloss",
+            n_jobs=-1,
+        )
+    else:
+        log.info("[head B] using C4 hand-defaults")
+        estimator = XGBClassifier(
+            n_estimators=800,
+            max_depth=8,
+            learning_rate=0.05,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            random_state=seed,
+            tree_method="hist",
+            eval_metric="mlogloss",
+            n_jobs=-1,
+        )
     pipeline = Pipeline(
         steps=[("preprocessor", build_preprocessor(fs)), ("estimator", estimator)]
     )
