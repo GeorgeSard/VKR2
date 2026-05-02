@@ -6,9 +6,8 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после Cause series C1-C4)
-**HEAD git:** см. `git log -1 --format=%h` (последние коммиты —
-infra `9ab4f8a`, серия `0cbbf8a` + `4ad72c5`, лог `<this>`)
+**Последнее обновление:** 2026-05-02 (после Cause C5 + scored deliverable)
+**HEAD git:** `a249735` (см. `git log -1 --format=%h`)
 **Текущая ветка:** `main`
 
 ---
@@ -24,7 +23,7 @@ infra `9ab4f8a`, серия `0cbbf8a` + `4ad72c5`, лог `<this>`)
 | 4. Feature engineering | ✅ (для 1й задачи) | в `6f28a3b` — 3 feature sets: basic / extended / with_weather |
 | 5. DVC pipeline | ⏳ partial | есть стадии ingest+split в dvc.yaml; train/evaluate как DVC stages — НЕ добавлены, train запускается напрямую |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
-| 7. Научные эксперименты | 🔄 в процессе | binary серия 8 runs (plateau F1 0.63); cause серия 4 runs (C1-C4, macro_f1 0.137 → 0.359) |
+| 7. Научные эксперименты | ✅ закрыта (обе головы plateau) | binary 8 runs (plateau F1 0.63); cause 5 runs (C1-C5, plateau macro_f1 0.36); scored test dataset собран |
 | 8. FastAPI + Docker | ❌ не начато | — |
 | 9. Мониторинг + feedback loop | ❌ не начато | — |
 | 10. Демонстрация end-to-end | ❌ не начато | — |
@@ -134,26 +133,29 @@ train.xgboost:                  # без изменений с Run #5; не ак
   по аэропорту. Это новая ось данных — аналог Δ1 (extended) и Δ2
   (with_weather). **30–60 мин фичей в `feature_sets.py` + 10 мин runs.**
 
-### Вариант B — вторая голова: серия по `delay_cause` (multi-class) — ✅ В ПРОЦЕССЕ
+### Вариант B — вторая голова: серия по `delay_cause` (multi-class) — ✅ ЗАКРЫТА (plateau)
 
-**Сделано:** инфраструктура (commit `9ab4f8a` — `multiclass_classification_metrics`,
-LabelEncoder в `train.py`, balanced sample_weight для бустингов, label
-classes как MLflow артефакт) + 4 runs:
+**Сделано:** инфраструктура (`9ab4f8a`) + tune.py multiclass (`0632ef7`) + 5 runs:
 
 | Run | git | feature_set / model | macro_f1 | acc | weighted_f1 | roc_auc_ovr |
 |---|---|---|---|---|---|---|
 | C1 | `9ab4f8a` | basic / logreg          | 0.137 | 0.194 | 0.239 | 0.670 |
 | C2 | `0cbbf8a` | extended / logreg       | 0.259 | 0.331 | 0.404 | 0.761 |
 | C3 | `0cbbf8a` | with_weather / logreg   | 0.310 | 0.396 | 0.473 | 0.827 |
-| C4 | `4ad72c5` | with_weather / xgboost  | **0.359** | **0.655** | **0.681** | 0.830 |
+| C4 | `4ad72c5` | with_weather / xgboost defaults | 0.359 | 0.655 | 0.681 | 0.830 |
+| C5 | `a249735` | with_weather / xgboost optuna | **0.361** | **0.656** | **0.682** | 0.830 |
 
-**Осталось** (опционально, с убывающим ROI):
-- C5 — Optuna для xgboost на cause (нужно расширить `tune.py` под
-  `--task delay_cause`; ожидаемая дельта +3-5 пунктов macro_f1).
+**Plateau подтверждён:** Δ-C4→C5 = +0.0025 macro_f1 (в шуме), ROC-AUC паритет.
+Тот же паттерн, что Δ Run #5 → Run #6 для binary head: hyperparam-ось
+не пробивает потолок при тех же фичах.
+
+**Осталось** (опционально, для пробития plateau):
 - C6 — двухступенчатая постановка (бинарный `causal vs none` +
   мультиклассовый по причине внутри causal); часто +5-10 пунктов
-  macro_f1 на задачах с доминирующим «нулевым» классом.
+  macro_f1 на задачах с доминирующим «нулевым» классом — единственная
+  оставшаяся гипотеза, реально способная сдвинуть plateau.
 - C7 — LightGBM-параллель (для head-to-head как Run #6 vs #8).
+- Новая ось данных под редкие классы (security/cancelled, 0.3 %/0.6 %).
 
 ### Вариант C — перейти к Этапу 8 (FastAPI + Docker)
 
@@ -173,19 +175,24 @@ docker НЕ установлен (проверял в первой сессии)
 
 ### Моя рекомендация на момент handoff
 
-Спросить пользователя в начале сессии:
-1. «Обе головы покрыты: binary plateau F1 0.63, cause macro_f1 0.359.
-   Куда дальше:
-   (i) Cause C5 — Optuna на xgboost (быстро, +3-5 пунктов macro_f1),
-   (ii) Cause C6 — двухступенчатая постановка (потенциал +5-10 пунктов),
-   (iii) собрать **scored test dataset** (deliverable из memory) с
-        текущими лидерами обеих голов и зафиксировать,
-   (iv) переходим к Этапу 8 — FastAPI + Docker?»
-2. Если ответ «как ты решишь» — идти (iii) **scored test dataset**:
-   обе головы уже имеют осмысленных лидеров (binary Run #6, cause C4),
-   эта работа закрывает явное пользовательское требование из последней
-   сессии и даёт демонстрируемый артефакт для ВКР. После можно
-   возвращаться в C5/C6 или сразу в Этап 8.
+Обе головы дошли до plateau и зафиксированы. Scored deliverable собран
+(`reports/scored_test_dataset.{xlsx,csv,parquet}` + русскоязычный
+README). Серия экспериментов закрыта на 13 runs (8 binary + 5 cause).
+
+Спросить пользователя:
+1. «Этап 7 закрыт. Куда дальше:
+   (i) C6 — двухступенчатая cause-постановка (единственный реалистичный
+       способ пробить plateau головы B без новых фичей),
+   (ii) Этап 8 — FastAPI + Docker (внедрение, ручки `/predict/delay`,
+        `/predict/cause`, `/health`, `/model/info`),
+   (iii) Этап 9 — мониторинг + feedback loop?»
+2. Если «как ты решишь» — идти **Этап 8**: серия закрыта (plateau
+   доказан на обеих головах, scored deliverable собран, всё
+   воспроизводимо), следующая большая дельта по жизненному циклу ML —
+   именно деплой через FastAPI + Docker. **Важная зависимость:** docker
+   на хосте НЕ установлен (см. tooling table) — попросить пользователя
+   поставить Docker Desktop, либо собирать compose-файл и запускать
+   локально без docker-compose в первой итерации.
 
 ---
 
