@@ -7,8 +7,9 @@
 > того же места без `/compact`.
 
 **Последнее обновление:** 2026-05-02 (Этап 5 закрыт, код Этапа 8 готов;
-Docker CLI 29.4.1 установлен пользователем, daemon ещё не стартанул)
-**HEAD git:** `2dd1a65` (`origin/main`, всё запушено)
+Docker CLI 29.4.1 + daemon `desktop-linux` работают — пользователь
+проверил `docker ps` / `docker info`, всё ок)
+**HEAD git:** `ffca76c` (`origin/main`, всё запушено)
 **Текущая ветка:** `main`
 
 ---
@@ -26,20 +27,75 @@ Docker CLI 29.4.1 установлен пользователем, daemon ещё
    Run #6 + C5 зарегистрированы в MLflow Registry как `flight-delay-binary` /
    `flight-delay-cause` v1. Локальный smoke через TestClient: все 4 ручки
    работают.
-4. **Что блокирует Этап 8:** Docker daemon не запущен.
-   - Docker CLI (29.4.1) установлен пользователем в этой сессии.
-   - Daemon недоступен — нужен `open -a Docker`, дождаться зелёной иконки
-     кита в menu bar, проверить `docker info` (ожидаем секцию Server: без
-     error).
-5. **Что делает Claude в начале следующей сессии** (после `docker info`
-   зелёный):
-   - `docker compose build` (~3-5 мин на первый раз)
-   - `docker compose up -d` + `docker compose logs -f api` для проверки
-     startup
-   - smoke `curl /health`, `curl /model/info`, `curl POST /predict/delay`
-   - скрин Swagger UI (http://localhost:8000/docs) для отчёта
-   - финальный коммит `feat(stage8): docker compose smoke validated`
-   - закрытие Этапа 8 в этой таблице
+4. **Docker готов к работе:** CLI 29.4.1, daemon `desktop-linux` отвечает
+   (`docker ps` возвращает пустую таблицу без ошибок, `docker info`
+   показывает Plugins:agent/ai от Docker Desktop). Всё, можно билдить.
+5. **Что Claude должен сделать в начале следующей сессии — пошагово:**
+   ```bash
+   cd /Users/georgij/Projects/ВКР2
+
+   # Шаг 1: сборка образов (первый раз ~3-5 мин: качается python:3.11-slim,
+   #         устанавливаются inference-deps через uv в api-образ)
+   docker compose build
+
+   # Шаг 2: подъём стека в фоне
+   docker compose up -d
+
+   # Шаг 3: проверка статуса (через 20-30 сек оба должны быть healthy)
+   docker compose ps
+
+   # Шаг 4: посмотреть startup-логи api — там видно загрузку моделей
+   #         из MLflow registry (ожидаем 2 строки "Loading flight-delay-...")
+   docker compose logs api | tail -30
+
+   # Шаг 5: smoke-тест ручек
+   curl -s http://localhost:8000/health | jq
+   # ожидаем: {"status":"ok","binary_loaded":true,"cause_loaded":true}
+
+   curl -s http://localhost:8000/model/info | jq
+   # ожидаем: версии 1, run_id обоих лидеров, git_commit, dvc_data_hash
+
+   # POST на бинарную голову (пример рейса SVO→LED A320)
+   curl -s -X POST http://localhost:8000/predict/delay \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "month":7,"day_of_week":3,"scheduled_dep_hour":14,
+       "scheduled_dep_minute":30,"is_weekend":0,"is_holiday_window":0,
+       "quarter":3,"distance_km":2300,"planned_block_minutes":195,
+       "airline_fleet_avg_age":12.5,"origin_hub_tier":1,"destination_hub_tier":2,
+       "inbound_delay_minutes":0,"origin_congestion_index":0.45,
+       "destination_congestion_index":0.32,"origin_temperature_c":18,
+       "origin_precip_mm":0,"origin_visibility_km":10,"origin_wind_mps":3.5,
+       "destination_temperature_c":22,"destination_precip_mm":0,
+       "destination_visibility_km":10,"destination_wind_mps":2.8,
+       "airline_code":"SU","aircraft_family":"A320","origin_iata":"SVO",
+       "destination_iata":"LED","route_group":"domestic_trunk",
+       "origin_weather_severity":"calm","destination_weather_severity":"calm"
+     }' | jq
+   # ожидаем: is_delayed=true, delay_probability~0.88
+   #         (ровно те же значения что в TestClient-смоке локально)
+   ```
+6. **После успешного смока:**
+   - Открыть http://localhost:8000/docs (Swagger UI) — заскринить для отчёта
+     («Рисунок N. Auto-generated API documentation, FastAPI + Pydantic»)
+   - Открыть http://localhost:5000 — это контейнерный MLflow с теми же
+     14 runs (через bind-mount `./mlruns:/mlflow/mlruns`)
+   - Финальный коммит `feat(stage8): docker compose smoke validated +
+     swagger screenshot`
+   - Обновить таблицу «Где мы по плану» — Этап 8 → ✅
+   - Возможные follow-up задачи (если останется время):
+     - Этап 9 — Prometheus + structured logging (есть пустая папка
+       `src/monitoring/`)
+     - Этап 10 — финальный end-to-end демо-скрипт с замыканием feedback
+       loop
+7. **Если что-то пойдёт не так на сборке:**
+   - Самая вероятная проблема — `pyproject.toml` или `uv` версия.
+     Сейчас в Dockerfile прибит `ghcr.io/astral-sh/uv:0.5.11`. Если
+     релизы поменяются — переключить на `0.11.x` или последний.
+   - Если api контейнер падает на startup с ошибкой загрузки моделей —
+     проверить, что bind-mount `./mlruns` правильно подцепился: внутри
+     mlflow контейнера должно быть `/mlflow/mlruns/897053182602335678/`
+     с 14 директориями run-id.
 6. **Гайды для отчёта (готовые к скринам):**
    - `reports/DVC_SCREENSHOTS_GUIDE.md` — 7 скринов про DVC + сценарий
      «изменили данные → метрика изменилась» (через `dvc metrics diff`)
