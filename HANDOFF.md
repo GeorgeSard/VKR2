@@ -6,8 +6,9 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после Run #8)
-**HEAD git:** `d8beb23` (`origin/main`, всё запушено)
+**Последнее обновление:** 2026-05-02 (после Cause series C1-C4)
+**HEAD git:** см. `git log -1 --format=%h` (последние коммиты —
+infra `9ab4f8a`, серия `0cbbf8a` + `4ad72c5`, лог `<this>`)
 **Текущая ветка:** `main`
 
 ---
@@ -23,7 +24,7 @@
 | 4. Feature engineering | ✅ (для 1й задачи) | в `6f28a3b` — 3 feature sets: basic / extended / with_weather |
 | 5. DVC pipeline | ⏳ partial | есть стадии ingest+split в dvc.yaml; train/evaluate как DVC stages — НЕ добавлены, train запускается напрямую |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
-| 7. Научные эксперименты | 🔄 в процессе | 8 runs, plateau ≈ F1 0.63 на `delay_binary`; серия по `delay_cause` ещё не начата |
+| 7. Научные эксперименты | 🔄 в процессе | binary серия 8 runs (plateau F1 0.63); cause серия 4 runs (C1-C4, macro_f1 0.137 → 0.359) |
 | 8. FastAPI + Docker | ❌ не начато | — |
 | 9. Мониторинг + feedback loop | ❌ не начато | — |
 | 10. Демонстрация end-to-end | ❌ не начато | — |
@@ -64,12 +65,12 @@ plateau определён данными, а не моделью.
 
 ## Текущее состояние `params.yaml`
 
-После Run #8. Активная конфигурация (не менялась с commit `c419a05`):
+После Cause Run C4. Активная конфигурация:
 
 ```yaml
 features.active_set: with_weather
-train.active_model: lightgbm    # ← переключено в commit c419a05 (Run #7)
-train.task: delay_binary
+train.active_model: xgboost     # ← переключено в коммите 4ad72c5 (Cause C4)
+train.task: delay_cause         # ← переключено для cause series
 train.lightgbm:                 # дефолты params.yaml — конфиг Run #7 (default lgbm)
   n_estimators: 400
   num_leaves: 63
@@ -133,19 +134,26 @@ train.xgboost:                  # без изменений с Run #5; не ак
   по аэропорту. Это новая ось данных — аналог Δ1 (extended) и Δ2
   (with_weather). **30–60 мин фичей в `feature_sets.py` + 10 мин runs.**
 
-### Вариант B — вторая голова: серия по `delay_cause` (multi-class)
+### Вариант B — вторая голова: серия по `delay_cause` (multi-class) — ✅ В ПРОЦЕССЕ
 
-Повторить ту же цепочку (data → model → tuning), но на multi-class
-таргете `probable_delay_cause`. Это:
-1. Расширить `train.py` для multi-class — `evaluate.py` уже надо дополнить
-   функцией `multiclass_classification_metrics` (macro_f1, weighted_f1,
-   per-class). NB! `train.py` сейчас падает на task != "delay_binary"
-   (`raise NotImplementedError`).
-2. Прогнать `basic → extended → with_weather → +xgboost → +tune` ещё 5–6 runs.
-3. Соответственно расширить `experiments_log.md`.
+**Сделано:** инфраструктура (commit `9ab4f8a` — `multiclass_classification_metrics`,
+LabelEncoder в `train.py`, balanced sample_weight для бустингов, label
+classes как MLflow артефакт) + 4 runs:
 
-Это **большое расширение по объёму работы** — закроет вторую заявленную
-в CLAUDE.md задачу полностью. **Полдня работы.**
+| Run | git | feature_set / model | macro_f1 | acc | weighted_f1 | roc_auc_ovr |
+|---|---|---|---|---|---|---|
+| C1 | `9ab4f8a` | basic / logreg          | 0.137 | 0.194 | 0.239 | 0.670 |
+| C2 | `0cbbf8a` | extended / logreg       | 0.259 | 0.331 | 0.404 | 0.761 |
+| C3 | `0cbbf8a` | with_weather / logreg   | 0.310 | 0.396 | 0.473 | 0.827 |
+| C4 | `4ad72c5` | with_weather / xgboost  | **0.359** | **0.655** | **0.681** | 0.830 |
+
+**Осталось** (опционально, с убывающим ROI):
+- C5 — Optuna для xgboost на cause (нужно расширить `tune.py` под
+  `--task delay_cause`; ожидаемая дельта +3-5 пунктов macro_f1).
+- C6 — двухступенчатая постановка (бинарный `causal vs none` +
+  мультиклассовый по причине внутри causal); часто +5-10 пунктов
+  macro_f1 на задачах с доминирующим «нулевым» классом.
+- C7 — LightGBM-параллель (для head-to-head как Run #6 vs #8).
 
 ### Вариант C — перейти к Этапу 8 (FastAPI + Docker)
 
@@ -166,18 +174,18 @@ docker НЕ установлен (проверял в первой сессии)
 ### Моя рекомендация на момент handoff
 
 Спросить пользователя в начале сессии:
-1. «Серия `delay_binary` достигла plateau ≈ F1 0.63. Куда дальше:
-   (i) добить серию (Run #9 CatBoost / Run #10 Stacking),
-   (ii) пробить plateau новой осью данных (Run #11+),
-   (iii) начать вторую голову `delay_cause`,
-   (iv) переходим к API/Docker (Этап 8)?»
-2. Если ответ «как ты решишь» — идти **Вариант B → серия `delay_cause`**:
-   первая голова закрыта (8 runs, plateau доказан), вторая голова —
-   обязательная по постановке ВКР («классификация причин») и сейчас
-   полностью отсутствует. Это самый большой gap в проекте относительно
-   формулировки темы. Альтернативно осмысленно — Run #11 (новая ось
-   данных: календарь/сезонность), это попытка пробить plateau перед
-   тем, как считать первую голову закрытой.
+1. «Обе головы покрыты: binary plateau F1 0.63, cause macro_f1 0.359.
+   Куда дальше:
+   (i) Cause C5 — Optuna на xgboost (быстро, +3-5 пунктов macro_f1),
+   (ii) Cause C6 — двухступенчатая постановка (потенциал +5-10 пунктов),
+   (iii) собрать **scored test dataset** (deliverable из memory) с
+        текущими лидерами обеих голов и зафиксировать,
+   (iv) переходим к Этапу 8 — FastAPI + Docker?»
+2. Если ответ «как ты решишь» — идти (iii) **scored test dataset**:
+   обе головы уже имеют осмысленных лидеров (binary Run #6, cause C4),
+   эта работа закрывает явное пользовательское требование из последней
+   сессии и даёт демонстрируемый артефакт для ВКР. После можно
+   возвращаться в C5/C6 или сразу в Этап 8.
 
 ---
 
