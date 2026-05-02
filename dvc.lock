@@ -58,3 +58,189 @@ stages:
       hash: md5
       md5: d32292ae56ed53f7cc598a0c24f2c0e6
       size: 2537841
+  featurize:
+    cmd: python -m src.models.dvc_featurize
+    deps:
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: db6a3140ffa708073e060630616d9218
+      size: 2555380
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 6d55bb9e8a5e1ed62d6e0496e747f680
+      size: 9958199
+    - path: data/processed/val.parquet
+      hash: md5
+      md5: d32292ae56ed53f7cc598a0c24f2c0e6
+      size: 2537841
+    - path: src/features/build_features.py
+      hash: md5
+      md5: 93c07dfa59936264fa213156c3c6275c
+      size: 3263
+    - path: src/features/feature_sets.py
+      hash: md5
+      md5: 4807335f6c4044262f66ceee1c228cb8
+      size: 3764
+    - path: src/models/dvc_featurize.py
+      hash: md5
+      md5: 379b9560fdfd82a9a6dc3ab9c94cf2be
+      size: 3279
+    params:
+      params.yaml:
+        features.active_set: with_weather
+        train.task: delay_cause
+    outs:
+    - path: data/featurized/X_test.parquet
+      hash: md5
+      md5: a150e572ad92ded626900f7d4d2dc1bc
+      size: 684335
+    - path: data/featurized/X_train.parquet
+      hash: md5
+      md5: d19ac48acbc7db35573651c64eae552f
+      size: 2617000
+    - path: data/featurized/X_val.parquet
+      hash: md5
+      md5: 1a2353a4b23a07294dd69cc5d6489319
+      size: 677633
+    - path: data/featurized/manifest.json
+      hash: md5
+      md5: 8a11173815764f36fec4217aa8b5f798
+      size: 1204
+    - path: data/featurized/y_test.parquet
+      hash: md5
+      md5: 5c6d52dcee20944c64f005386d5f01bb
+      size: 12445
+    - path: data/featurized/y_train.parquet
+      hash: md5
+      md5: 8d286560d6ee5ad5f11ae5db70b65be9
+      size: 49429
+    - path: data/featurized/y_val.parquet
+      hash: md5
+      md5: 75a3cefefa91f5d897fce87706ac267a
+      size: 14022
+  train:
+    cmd: python -m src.models.dvc_train
+    deps:
+    - path: data/featurized/X_train.parquet
+      hash: md5
+      md5: d19ac48acbc7db35573651c64eae552f
+      size: 2617000
+    - path: data/featurized/X_val.parquet
+      hash: md5
+      md5: 1a2353a4b23a07294dd69cc5d6489319
+      size: 677633
+    - path: data/featurized/manifest.json
+      hash: md5
+      md5: 8a11173815764f36fec4217aa8b5f798
+      size: 1204
+    - path: data/featurized/y_train.parquet
+      hash: md5
+      md5: 8d286560d6ee5ad5f11ae5db70b65be9
+      size: 49429
+    - path: data/featurized/y_val.parquet
+      hash: md5
+      md5: 75a3cefefa91f5d897fce87706ac267a
+      size: 14022
+    - path: src/features/build_features.py
+      hash: md5
+      md5: 93c07dfa59936264fa213156c3c6275c
+      size: 3263
+    - path: src/features/feature_sets.py
+      hash: md5
+      md5: 4807335f6c4044262f66ceee1c228cb8
+      size: 3764
+    - path: src/models/dvc_train.py
+      hash: md5
+      md5: 3f339fc8438b83ac2e3b5ba68ba9a3ce
+      size: 5687
+    - path: src/models/evaluate.py
+      hash: md5
+      md5: cf0e5ae16a527e896f1b16b3ddc6c06d
+      size: 2892
+    - path: src/models/train.py
+      hash: md5
+      md5: 46321cd8e38a4cd995d4d19fa0732b49
+      size: 11972
+    params:
+      params.yaml:
+        base.random_seed: 42
+        train.active_model: xgboost
+        train.catboost:
+          iterations: 400
+          depth: 6
+          learning_rate: 0.05
+        train.lightgbm:
+          n_estimators: 400
+          num_leaves: 63
+          learning_rate: 0.05
+          subsample: 0.9
+          colsample_bytree: 0.9
+        train.logreg:
+          C: 1.0
+          max_iter: 1000
+          class_weight: balanced
+        train.random_forest:
+          n_estimators: 200
+          max_depth: 12
+          class_weight: balanced
+        train.task: delay_cause
+        train.xgboost:
+          n_estimators: 800
+          max_depth: 8
+          learning_rate: 0.05
+          subsample: 0.9
+          colsample_bytree: 0.9
+          scale_pos_weight: 3.17
+    outs:
+    - path: models/dvc_label_classes.json
+      hash: md5
+      md5: e9271d1febdbcf35f12e1284bb0baadf
+      size: 153
+    - path: models/dvc_model.pkl
+      hash: md5
+      md5: f4f8378c1dea026ca4389814a9103556
+      size: 45953148
+    - path: reports/val_metrics.json
+      hash: md5
+      md5: 23c2e572f46255bba6b338d208ad077f
+      size: 232
+  evaluate:
+    cmd: python -m src.models.dvc_evaluate
+    deps:
+    - path: data/featurized/X_test.parquet
+      hash: md5
+      md5: a150e572ad92ded626900f7d4d2dc1bc
+      size: 684335
+    - path: data/featurized/manifest.json
+      hash: md5
+      md5: 8a11173815764f36fec4217aa8b5f798
+      size: 1204
+    - path: data/featurized/y_test.parquet
+      hash: md5
+      md5: 5c6d52dcee20944c64f005386d5f01bb
+      size: 12445
+    - path: models/dvc_label_classes.json
+      hash: md5
+      md5: e9271d1febdbcf35f12e1284bb0baadf
+      size: 153
+    - path: models/dvc_model.pkl
+      hash: md5
+      md5: f4f8378c1dea026ca4389814a9103556
+      size: 45953148
+    - path: src/models/dvc_evaluate.py
+      hash: md5
+      md5: f06cc6d349c373839bd1ed164692d5d7
+      size: 4264
+    - path: src/models/evaluate.py
+      hash: md5
+      md5: cf0e5ae16a527e896f1b16b3ddc6c06d
+      size: 2892
+    outs:
+    - path: reports/confusion_matrix.csv
+      hash: md5
+      md5: adfc84689f8d13911d6bee0abb6748d0
+      size: 408
+    - path: reports/test_metrics.json
+      hash: md5
+      md5: f7577da735acce52ef7de181f9f25c4c
+      size: 233

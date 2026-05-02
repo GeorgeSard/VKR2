@@ -6,9 +6,9 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после Cause C5 + scored deliverable
-+ scored README + закрытия Этапа 7)
-**HEAD git:** `549095b` (`origin/main`, всё запушено)
+**Последнее обновление:** 2026-05-02 (после полного DVC pipeline —
+featurize → train → evaluate, Этап 5 закрыт)
+**HEAD git:** новый коммит после `e7af593` (DVC pipeline expansion)
 **Текущая ветка:** `main`
 
 ---
@@ -17,7 +17,10 @@
 
 1. **Этап 7 (научные эксперименты) ЗАКРЫТ**: 13 runs всего, обе головы
    достигли plateau, scored test dataset собран и задокументирован.
-2. **Решение пользователя для следующей сессии:** идём на **Этап 8 —
+2. **Этап 5 (DVC pipeline) ЗАКРЫТ**: добавлены стадии `featurize → train →
+   evaluate` поверх существующих `ingest → split`. Полный DAG из 5 узлов
+   воспроизводим одной командой `dvc repro`. См. раздел «DVC pipeline» ниже.
+3. **Решение пользователя для следующей сессии:** идём на **Этап 8 —
    FastAPI + Docker**. Docker на хосте НЕ установлен, **пользователь
    попросил Claude самого установить Docker Desktop** в новой сессии
    (через `brew install --cask docker` + первый запуск `open -a Docker`
@@ -59,7 +62,7 @@
 | 2. Глава 2 | ⛔ skip | вне scope |
 | 3. Данные + DVC | ✅ | `0da22bc` — dvc init, локальный remote, ingest+split pipeline, params.yaml |
 | 4. Feature engineering | ✅ | `6f28a3b` — 3 feature sets: basic / extended / with_weather |
-| 5. DVC pipeline | ⏳ partial | есть стадии ingest+split; train/evaluate как DVC stages — НЕ добавлены, train запускается напрямую (план: добить вместе с Этапом 8) |
+| 5. DVC pipeline | ✅ | 5 стадий: ingest → split → featurize → train → evaluate; `dvc repro` от raw до метрик одной командой; `dvc metrics show` сравнивает val+test |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
 | 7. Научные эксперименты | ✅ ЗАКРЫТА | binary 8 runs (plateau F1 0.63); cause 5 runs (C1-C5, plateau macro_f1 0.36); scored test dataset + README собраны |
 | **8. FastAPI + Docker** | ⏭️ **СЛЕДУЮЩИЙ** | docker сам ставлю; план в верхушке файла |
@@ -229,6 +232,125 @@ nohup mlflow ui --backend-store-uri "file:$PWD/mlruns" --host 127.0.0.1 --port 5
 
 ---
 
+## 🧬 DVC pipeline — полный жизненный цикл одной командой
+
+После Этапа 5 проект имеет полный DVC DAG из 5 стадий. Это даёт два
+важных свойства для отчёта:
+
+1. **`dvc repro`** — воспроизводит весь путь от сырого parquet до метрик
+   за одну команду; пересобирает только те стадии, чьи зависимости или
+   параметры изменились.
+2. **`dvc metrics show`** + **`dvc params diff`** — позволяют сравнивать
+   эксперименты между git-коммитами без захода в MLflow UI.
+
+### DAG (для скриншота)
+
+```bash
+dvc dag
+```
+
+Текущий граф:
+```
+raw.dvc → ingest → split → featurize → train → evaluate
+```
+
+5 стадий пайплайна + 1 источник данных (DVC-pointer на сырой parquet).
+
+### Что делает каждая стадия
+
+| Стадия | Вход | Выход | Параметры (params.yaml) |
+|---|---|---|---|
+| `ingest` | `data/raw/flight_delays_ru.parquet` | `data/interim/flight_delays_clean.parquet` | `data.*` |
+| `split` | interim parquet | `data/processed/{train,val,test}.parquet` | `split.*`, `base.random_seed` |
+| `featurize` | 3 processed parquet | `data/featurized/{X,y}_{train,val,test}.parquet` + `manifest.json` | `features.active_set`, `train.task` |
+| `train` | featurized X/y train+val | `models/dvc_model.pkl`, `models/dvc_label_classes.json`, `reports/val_metrics.json` | `train.active_model`, `train.<model>.*`, `base.random_seed` |
+| `evaluate` | model + featurized test | `reports/test_metrics.json`, `reports/confusion_matrix.csv` | (наследует от train через model) |
+
+### Команды для отчёта (всё работает прямо сейчас)
+
+```bash
+# 1. Граф пайплайна — главный скрин для главы 3 (DVC)
+dvc dag
+
+# 2. Текущие метрики (val + test одной таблицей)
+dvc metrics show
+# → выводит accuracy, macro_f1, weighted_f1, roc_auc_ovr_weighted и др.
+
+# 3. Воспроизведение всего пайплайна
+dvc repro          # пересобрать только то, что изменилось
+dvc repro -f       # пересобрать всё с нуля
+
+# 4. Статус — пайплайн «in sync»?
+dvc status
+
+# 5. Сравнение метрик между коммитами (для серий экспериментов)
+dvc metrics diff HEAD~1 HEAD
+dvc params diff HEAD~1 HEAD
+```
+
+### Сценарий для отчёта «изменили данные → результат изменился»
+
+Этот цикл буквально показывает руководителю «процесс» в действии:
+
+```bash
+# Базовая точка
+git checkout main
+dvc repro
+dvc metrics show          # запомнить значения
+
+# Эксперимент 1: переключаем feature_set
+sed -i '' 's/active_set: with_weather/active_set: basic/' params.yaml
+dvc repro                  # featurize → train → evaluate перезапустятся
+dvc metrics diff HEAD      # видна дельта macro_f1, accuracy, …
+git diff params.yaml       # ровно одно изменение зафиксировано
+
+# Эксперимент 2: меняем модель
+git checkout params.yaml   # вернуть feature_set
+sed -i '' 's/active_model: xgboost/active_model: lightgbm/' params.yaml
+dvc repro
+dvc metrics diff HEAD
+```
+
+Каждый такой цикл = один скриншот «было → стало» с гарантией: сменилась
+ровно одна ось (потому что `dvc params diff` это покажет), всё остальное
+зафиксировано хешами в `dvc.lock`.
+
+### Где смотреть метрики
+
+Файлы метрик закоммичены в git (без DVC-кеша через `cache: false`):
+
+- `reports/val_metrics.json` — метрики на validation split (что видела
+  модель во время обучения)
+- `reports/test_metrics.json` — метрики на held-out test (честная оценка)
+- `reports/confusion_matrix.csv` — confusion matrix на test (для
+  скриншота можно открыть в Excel или построить heatmap)
+
+Текущие значения (на момент последнего `dvc repro`, with_weather +
+xgboost defaults + delay_cause):
+
+| Метрика | val | test |
+|---|---|---|
+| accuracy | 0.6552 | 0.6986 |
+| macro_f1 | 0.3585 | 0.3783 |
+| weighted_f1 | 0.6807 | 0.7190 |
+| roc_auc_ovr_weighted | 0.8299 | 0.8193 |
+
+### DVC vs MLflow — что они делают
+
+| | DVC | MLflow |
+|---|---|---|
+| Что хранит | Pipeline + версии данных и моделей | History всех runs |
+| Зачем для отчёта | «Воспроизводимость одной командой» | «13 экспериментов в одной таблице» |
+| Запуск | `dvc repro` | `python -m src.models.train` |
+| Скриншот для отчёта | DAG + metrics show | Список runs + Compare |
+
+Пайплайны **не пересекаются**: DVC использует свой entry point
+`dvc_*.py`, MLflow — `train.py`/`tune.py`. Это сделано осознанно: DVC
+история — короткая и чистая (последний прогон), MLflow история — длинная
+и тегированная (все эксперименты с git_commit).
+
+---
+
 ## Tooling state
 
 | Инструмент | Где | Версия | Статус |
@@ -282,7 +404,7 @@ python -m src.models.score_dataset
 │   ├── scored_test_dataset.csv             ← gitignored, регенерируется
 │   └── scored_test_dataset.xlsx            ← gitignored, регенерируется
 ├── params.yaml                             ← конфиг всех экспериментов
-├── dvc.yaml                                ← stages: ingest, split
+├── dvc.yaml                                ← 5 stages: ingest, split, featurize, train, evaluate
 ├── dvc.lock
 ├── pyproject.toml                          ← + openpyxl
 ├── src/
@@ -295,15 +417,24 @@ python -m src.models.score_dataset
 │   │   ├── feature_sets.py                 ← BASIC / EXTENDED / WITH_WEATHER + LEAKAGE
 │   │   └── build_features.py               ← ColumnTransformer + make_xy
 │   └── models/
-│       ├── train.py                        ← entry-point + binary AND multiclass dispatch
+│       ├── train.py                        ← MLflow entry-point + binary AND multiclass dispatch
 │       ├── tune.py                         ← Optuna study (xgb/lgbm × binary/cause)
-│       ├── evaluate.py                     ← binary + multiclass metrics
+│       ├── evaluate.py                     ← binary + multiclass metric helpers
+│       ├── dvc_featurize.py                ← DVC stage: split → X/y + manifest
+│       ├── dvc_train.py                    ← DVC stage: fit Pipeline → model.pkl + val_metrics
+│       ├── dvc_evaluate.py                 ← DVC stage: test scoring → test_metrics + confusion
 │       └── score_dataset.py                ← финальный scored test dataset (обе головы)
 ├── data/raw/{flight_delays_ru.parquet, sample.csv}.dvc   ← в git, данные в DVC remote
+├── data/featurized/                                      ← gitignored, DVC stage output (X/y splits + manifest)
 ├── models/best_xgboost_params.yaml                       ← gitignored, Run #6
 ├── models/best_lightgbm_params.yaml                      ← gitignored, Run #8
 ├── models/best_xgboost_delay_cause_params.yaml           ← gitignored, C5
 ├── models/label_classes_delay_cause.yaml                 ← gitignored, для inference cause-головы
+├── models/dvc_model.pkl                                  ← gitignored, DVC stage output (последний train)
+├── models/dvc_label_classes.json                         ← gitignored, DVC stage output (для evaluate)
+├── reports/val_metrics.json                              ← в git (DVC metric, cache: false)
+├── reports/test_metrics.json                             ← в git (DVC metric, cache: false)
+├── reports/confusion_matrix.csv                          ← в git (DVC plot, cache: false)
 └── mlruns/                                               ← gitignored, 13 runs
 ```
 

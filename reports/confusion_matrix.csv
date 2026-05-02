@@ -1,0 +1,8 @@
+,pred_airport_congestion,pred_cancelled,pred_carrier_operational,pred_none,pred_reactionary,pred_security,pred_weather
+actual_airport_congestion,1063,0,21,54,36,0,41
+actual_cancelled,8,2,6,40,18,0,123
+actual_carrier_operational,376,0,408,1717,71,1,325
+actual_none,1857,2,2752,21251,318,4,2276
+actual_reactionary,62,1,28,32,1011,0,172
+actual_security,24,0,24,122,6,0,20
+actual_weather,144,5,40,253,166,1,2102

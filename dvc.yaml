@@ -1,6 +1,22 @@
-# DVC pipeline — текущие стадии. По мере прохождения этапов CLAUDE.md §7
-# сюда будут добавляться `features`, `train`, `evaluate`. Пока что — нижняя
-# часть жизненного цикла: ingest → split.
+# DVC pipeline — full ML lifecycle from raw → metrics.
+#
+# Stages map directly to chapters of the report:
+#   ingest    — Stage 3 (Data) — clean raw parquet
+#   split     — Stage 3 (Data) — time-based train/val/test
+#   featurize — Stage 4 (Feature engineering) — project onto active feature set
+#   train     — Stage 6 (Training) — fit Pipeline(preprocessor, estimator)
+#   evaluate  — Stage 7 (Evaluation) — score on held-out test split
+#
+# `dvc dag` visualizes the chain end-to-end. `dvc metrics show` reads
+# val_metrics.json + test_metrics.json. `dvc params diff <commit>` compares
+# any two experiments. `dvc repro` reruns only the stages whose deps or
+# params changed.
+#
+# This pipeline is independent from the MLflow workflow in `src/models/train.py`
+# (that one stays for run-by-run experimentation with full tag history).
+# DVC owns the "everything reproducible from a single command" story; MLflow
+# owns the "compare 14 runs side by side" story.
+
 stages:
   ingest:
     cmd: python -m src.data.ingest
@@ -29,3 +45,70 @@ stages:
       - data/processed/train.parquet
       - data/processed/val.parquet
       - data/processed/test.parquet
+
+  featurize:
+    cmd: python -m src.models.dvc_featurize
+    deps:
+      - src/models/dvc_featurize.py
+      - src/features/build_features.py
+      - src/features/feature_sets.py
+      - data/processed/train.parquet
+      - data/processed/val.parquet
+      - data/processed/test.parquet
+    params:
+      - features.active_set
+      - train.task
+    outs:
+      - data/featurized/X_train.parquet
+      - data/featurized/y_train.parquet
+      - data/featurized/X_val.parquet
+      - data/featurized/y_val.parquet
+      - data/featurized/X_test.parquet
+      - data/featurized/y_test.parquet
+      - data/featurized/manifest.json
+
+  train:
+    cmd: python -m src.models.dvc_train
+    deps:
+      - src/models/dvc_train.py
+      - src/models/train.py
+      - src/models/evaluate.py
+      - src/features/build_features.py
+      - src/features/feature_sets.py
+      - data/featurized/X_train.parquet
+      - data/featurized/y_train.parquet
+      - data/featurized/X_val.parquet
+      - data/featurized/y_val.parquet
+      - data/featurized/manifest.json
+    params:
+      - base.random_seed
+      - train.active_model
+      - train.task
+      - train.logreg
+      - train.random_forest
+      - train.xgboost
+      - train.lightgbm
+      - train.catboost
+    outs:
+      - models/dvc_model.pkl
+      - models/dvc_label_classes.json
+    metrics:
+      - reports/val_metrics.json:
+          cache: false
+
+  evaluate:
+    cmd: python -m src.models.dvc_evaluate
+    deps:
+      - src/models/dvc_evaluate.py
+      - src/models/evaluate.py
+      - models/dvc_model.pkl
+      - models/dvc_label_classes.json
+      - data/featurized/X_test.parquet
+      - data/featurized/y_test.parquet
+      - data/featurized/manifest.json
+    metrics:
+      - reports/test_metrics.json:
+          cache: false
+    plots:
+      - reports/confusion_matrix.csv:
+          cache: false
