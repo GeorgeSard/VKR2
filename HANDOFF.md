@@ -6,8 +6,8 @@
 > вместе с CLAUDE.md и memory будет достаточно, чтобы продолжить с
 > того же места без `/compact`.
 
-**Последнее обновление:** 2026-05-02 (после Run #7)
-**HEAD git:** `94174e5` (`origin/main`, всё запушено)
+**Последнее обновление:** 2026-05-02 (после Run #8)
+**HEAD git:** `d8beb23` (`origin/main`, всё запушено)
 **Текущая ветка:** `main`
 
 ---
@@ -23,7 +23,7 @@
 | 4. Feature engineering | ✅ (для 1й задачи) | в `6f28a3b` — 3 feature sets: basic / extended / with_weather |
 | 5. DVC pipeline | ⏳ partial | есть стадии ingest+split в dvc.yaml; train/evaluate как DVC stages — НЕ добавлены, train запускается напрямую |
 | 6. MLflow + baseline | ✅ | `6f28a3b` — train.py с MLflow tracking, file backend в `mlruns/` |
-| 7. Научные эксперименты | 🔄 в процессе | 7 runs готовы (см. ниже), серия по `delay_cause` ещё не начата |
+| 7. Научные эксперименты | 🔄 в процессе | 8 runs, plateau ≈ F1 0.63 на `delay_binary`; серия по `delay_cause` ещё не начата |
 | 8. FastAPI + Docker | ❌ не начато | — |
 | 9. Мониторинг + feedback loop | ❌ не начато | — |
 | 10. Демонстрация end-to-end | ❌ не начато | — |
@@ -32,7 +32,7 @@
 
 ## Серия экспериментов — что есть в MLflow
 
-`mlruns/` (file backend), эксперимент `flight-delay-mlops`. Все 7 runs
+`mlruns/` (file backend), эксперимент `flight-delay-mlops`. Все 8 runs
 имеют теги `git_commit`, `dvc_data_hash`, `feature_set`, `model`,
 `task=delay_binary`, `params_version=v1`. Полное описание дельт
 с интерпретацией — в `reports/experiments_log.md`.
@@ -46,32 +46,38 @@
 | 5 | `a7a0ecd5` | `341e954` | with_weather + xgboost (manual tune) | 0.619 | 0.830 |
 | 6 | `4227cd7b` | `b3dc9c8` | with_weather + xgboost (optuna 30 trials) | **0.630** | **0.839** |
 | 7 | `d60d3feb` | `c419a05` | with_weather + lightgbm (default) | 0.573 | 0.839 |
+| 8 | `716664c0` | `3ce36c8` | with_weather + lightgbm (optuna 30 trials) | **0.629** | **0.839** |
 
-**Текущий лидер по F1:** Run #6 (xgboost optuna), F1=0.630, ROC-AUC=0.839.
-**Run #7 — научный смысл:** copy-paste результата Run #4 (lgbm default ≈ xgb default
-на ±0.001 по всем метрикам). Подтверждает: смена boosting library без балансировки
-классов не двигает метрики — узкое место в `scale_pos_weight`/`is_unbalance`, не в
-выборе библиотеки. См. Δ6 в `experiments_log.md` (важный сюжет для главы 3).
-**Лучшие гиперпараметры XGBoost:** `models/best_xgboost_params.yaml` (gitignored, локальный артефакт; копия — артефакт MLflow run #6).
+**Текущий лидер по F1:** формально Run #6 (xgb optuna, F1=0.630), но Run #8
+(lgbm optuna, F1=0.629) — паритет в пределах шума. ROC-AUC=0.839 у обоих.
+**Сюжет серии для главы 3:** XGBoost vs LightGBM при одинаковой методике
+(балансировка + Optuna 30 trials, тот же `seed=42`, тот же search space там
+где параметры эквивалентны) сошлись к одной точке — F1 ≈ 0.63, ROC-AUC ≈ 0.839.
+Optuna независимо нашла похожие конфиги: low LR ~ 0.014, scale_pos_weight ~ 2.5
+(оба мягче моего ручного 3.17), high n_estimators. Сильное доказательство, что
+plateau определён данными, а не моделью.
+**Лучшие гиперпараметры:** `models/best_xgboost_params.yaml` (Run #6) и
+`models/best_lightgbm_params.yaml` (Run #8) — оба gitignored, локальные артефакты,
+копии в MLflow runs соответственно.
 
 ---
 
 ## Текущее состояние `params.yaml`
 
-После Run #7. Активная конфигурация:
+После Run #8. Активная конфигурация (не менялась с commit `c419a05`):
 
 ```yaml
 features.active_set: with_weather
 train.active_model: lightgbm    # ← переключено в commit c419a05 (Run #7)
 train.task: delay_binary
-train.lightgbm:                 # дефолты params.yaml — конфиг Run #7
+train.lightgbm:                 # дефолты params.yaml — конфиг Run #7 (default lgbm)
   n_estimators: 400
   num_leaves: 63
   learning_rate: 0.05
   subsample: 0.9
   colsample_bytree: 0.9
-  # БЕЗ class_weight / is_unbalance — это и есть причина почему Run #7
-  # дублирует Run #4 по метрикам. Run #8 = добавить балансировку + Optuna.
+  # БЕЗ class_weight / is_unbalance в params.yaml. Optuna нашла лучший
+  # конфиг в Run #8 → models/best_lightgbm_params.yaml (см. ниже).
 train.xgboost:                  # без изменений с Run #5; не активен
   n_estimators: 800
   max_depth: 8
@@ -81,11 +87,18 @@ train.xgboost:                  # без изменений с Run #5; не ак
   scale_pos_weight: 3.17        # Optuna нашла лучший в Run #6 → models/best_xgboost_params.yaml
 ```
 
-**Решение по промоушу Optuna best params в `params.yaml`** — всё ещё отложено.
-Если нужно вернуть лидера (Run #6) одной командой:
-1. `params.yaml → train.active_model: lightgbm → xgboost`
-2. Скопировать содержимое `models/best_xgboost_params.yaml` в `params.yaml → train.xgboost`
-3. Коммит `experiment: promote optuna best params to xgboost defaults` (или просто переключить active_model назад на xgboost — сами параметры Run #5 уже там).
+**Решение по промоушу Optuna best params в `params.yaml`** — всё ещё отложено
+для обеих моделей. Best-params артефакты живут отдельно:
+
+| Run | Файл | Что внутри |
+|---|---|---|
+| #6 | `models/best_xgboost_params.yaml` | best XGBoost (n_est=1000, lr=0.0138, scale_pos_weight=2.371, …) |
+| #8 | `models/best_lightgbm_params.yaml` | best LightGBM (n_est=700, num_leaves=105, lr=0.0141, scale_pos_weight=2.665, …) |
+
+Если нужно дефолтным `python -m src.models.train` получить Run #6 или #8 — скопировать
+содержимое соответствующего файла в `params.yaml → train.<model>` и коммит
+`experiment: promote optuna best params to <model> defaults`. Сейчас `train.py`
+с `active_model: lightgbm` даст результат Run #7 (default lgbm).
 
 ---
 
@@ -94,27 +107,31 @@ train.xgboost:                  # без изменений с Run #5; не ак
 Пользователь явно просил «продолжить серию экспериментов». На столе три
 направления, выбор за пользователем:
 
-### Вариант A — расширить серию по `delay_binary` (рекомендую как первый)
+### Вариант A — закрыть серию `delay_binary` оставшимися моделями/осями
 
-- **Run #8 — LightGBM с балансировкой классов + Optuna.** Это честный
-  head-to-head с Run #6 и логичный ответ на вывод из Δ6 (см.
-  `experiments_log.md`): без `is_unbalance=True` / `class_weight='balanced'`
-  LightGBM просто копирует Run #4. Гипотеза: F1 ≈ 0.62–0.64, паритет
-  с XGBoost. **15–25 минут** (Optuna 30 trials на LightGBM ~ как было
-  для XGBoost, поправить `tune.py` под новую модель).
-  - В `tune.py` добавить ветку для `lightgbm` (или сделать `--model lightgbm`)
-  - Запустить `python -m src.models.tune --model lightgbm --n-trials 30`
-  - Сохранить best в `models/best_lightgbm_params.yaml`
-  - update `experiments_log.md` + commit
+Серия `delay_binary` достигла **plateau ≈ F1 0.63 / ROC-AUC 0.839** на
+текущем наборе фичей (Run #6 и Run #8 в паритете). Дальнейшие приросты
+ждать не от ещё одного бустинга, а от смены оси.
 
-- **Run #9 — CatBoost** на `with_weather` + `auto_class_weights=Balanced`.
-  Часто лучший на табличке с категориями (у нас их много —
-  airline_code, airport ICAO, route, fleet_type). **5–10 минут** для
-  defaults; +Optuna ~ ещё 15–25 минут.
+- **Run #9 — CatBoost** на `with_weather` + `auto_class_weights=Balanced`,
+  далее Optuna через расширение `tune.py` (добавить ветку `--model catboost`,
+  как сделано для lightgbm в commit `3ce36c8`). Маловероятно перебьёт
+  plateau, но даёт третью точку библиотечной оси (xgb / lgbm / cb) —
+  закрывает «pool бустингов» в отчёте. **5 минут defaults + 20–30 минут Optuna.**
 
-- **Run #10 — Stacking/Voting ensemble** — лучшего logreg + xgboost (Run #6) +
-  lightgbm (Run #8 после тюнинга). Нужно дописать `src/models/ensemble.py`
-  (создать его). **20–30 мин** кода + коммит. Обычно ещё +1–2 пункта F1.
+- **Run #10 — Stacking/Voting ensemble** — лучшего logreg (Run #3) +
+  xgboost (Run #6) + lightgbm (Run #8) через новый `src/models/ensemble.py`.
+  Обычно даёт ещё +1–2 пункта F1 на бустинговом плато; в отчёте закрывает
+  архитектурную ось. **20–30 мин кода + 5–10 мин fit.**
+
+- **Run #11+ — следующая ось данных (рекомендую как самый ценный
+  следующий шаг для отчёта).** Plateau показывает, что ROI смены модели
+  исчерпан; новая дельта ≥ +0.02 F1 реально получить только из новых
+  фичей. Кандидаты: календарные/сезонные (праздники РФ, школьные
+  каникулы, day_of_week × month взаимодействия), исторический average
+  delay по маршруту/борту за последние N дней, индикатор пиковых часов
+  по аэропорту. Это новая ось данных — аналог Δ1 (extended) и Δ2
+  (with_weather). **30–60 мин фичей в `feature_sets.py` + 10 мин runs.**
 
 ### Вариант B — вторая голова: серия по `delay_cause` (multi-class)
 
@@ -132,8 +149,8 @@ train.xgboost:                  # без изменений с Run #5; не ак
 
 ### Вариант C — перейти к Этапу 8 (FastAPI + Docker)
 
-Серию экспериментов считать достаточной (7 runs, 6 дельт), идти дальше
-по жизненному циклу. План §7.8:
+Серию экспериментов считать достаточной (8 runs, 8 дельт, plateau
+обнаружен и зафиксирован), идти дальше по жизненному циклу. План §7.8:
 - Регистрация финальной модели (Run #6) в MLflow Model Registry.
 - `src/api/main.py`: FastAPI с `/predict/delay`, `/predict/cause`,
   `/health`, `/model/info`.
@@ -149,13 +166,18 @@ docker НЕ установлен (проверял в первой сессии)
 ### Моя рекомендация на момент handoff
 
 Спросить пользователя в начале сессии:
-1. «Хочешь ещё runs по `delay_binary` (Run #8+), вторую серию по `delay_cause`,
-   или переходим к API/Docker?»
-2. Если ответ «как ты решишь» — идти **Вариант A → Run #8 (LightGBM
-   balanced + Optuna)**: закроет вопрос «справедливо ли мы сравнили
-   XGBoost vs LightGBM?», который явно поднят в Δ6 после Run #7.
-   После Run #8 — Run #9 (CatBoost), потом стек (Run #10), и серия
-   по `delay_binary` будет закрыта 4 моделями × 2 конфига каждая.
+1. «Серия `delay_binary` достигла plateau ≈ F1 0.63. Куда дальше:
+   (i) добить серию (Run #9 CatBoost / Run #10 Stacking),
+   (ii) пробить plateau новой осью данных (Run #11+),
+   (iii) начать вторую голову `delay_cause`,
+   (iv) переходим к API/Docker (Этап 8)?»
+2. Если ответ «как ты решишь» — идти **Вариант B → серия `delay_cause`**:
+   первая голова закрыта (8 runs, plateau доказан), вторая голова —
+   обязательная по постановке ВКР («классификация причин») и сейчас
+   полностью отсутствует. Это самый большой gap в проекте относительно
+   формулировки темы. Альтернативно осмысленно — Run #11 (новая ось
+   данных: календарь/сезонность), это попытка пробить plateau перед
+   тем, как считать первую голову закрытой.
 
 ---
 
@@ -170,7 +192,7 @@ docker НЕ установлен (проверял в первой сессии)
 | mlflow | `.venv/bin/mlflow` | 2.x | ✅, file backend `file:./mlruns` |
 | brew libomp | `/opt/homebrew/opt/libomp` | — | ✅ (нужно для xgboost на macOS) |
 | docker | — | — | ❌ не установлен (нужен для Этапа 8) |
-| MLflow UI | background-таск из этой сессии | — | ⚠️ умрёт после закрытия сессии — поднимать заново (см. ниже) |
+| MLflow UI | background-таск (`bnikdp4p0` в текущей сессии) | — | 🟢 живой на http://127.0.0.1:5000 пока сессия открыта; после рестарта — команда ниже |
 
 ### Команды для рестарта окружения завтра
 
@@ -189,8 +211,10 @@ mlflow ui --backend-store-uri "file:$PWD/mlruns" --host 127.0.0.1 --port 5000
 # 4. Запустить train (с текущими params.yaml)
 python -m src.models.train
 
-# 5. Запустить optuna (если нужно)
+# 5. Запустить optuna (если нужно). По умолчанию — XGBoost, как в Run #6.
 python -m src.models.tune --n-trials 30
+# Для LightGBM (Run #8):
+python -m src.models.tune --model lightgbm --n-trials 30
 ```
 
 ---
@@ -220,7 +244,8 @@ python -m src.models.tune --n-trials 30
 │       └── evaluate.py                     ← binary_classification_metrics
 ├── data/raw/{flight_delays_ru.parquet, sample.csv}.dvc   ← в git, данные в DVC remote
 ├── models/best_xgboost_params.yaml         ← gitignored, артефакт Run #6
-└── mlruns/                                 ← gitignored, 7 runs внутри
+├── models/best_lightgbm_params.yaml        ← gitignored, артефакт Run #8
+└── mlruns/                                 ← gitignored, 8 runs внутри
 ```
 
 Чего ещё НЕТ (упомянуто в плане, но не создано):
@@ -237,6 +262,9 @@ python -m src.models.tune --n-trials 30
 ## История коммитов на main (для git log сверки)
 
 ```
+d8beb23 experiment: optuna lightgbm — Run #8, f1 0.573 → 0.629 (+9.8 %), parity with xgboost
+3ce36c8 feat(tuning): generalize Optuna tuner to support LightGBM
+81cc60f docs: refresh HANDOFF.md after Run #7 (LightGBM)
 94174e5 docs(experiments): log Run #7 (LightGBM defaults) — boosting library is not the lever
 c419a05 experiment: switch active model xgboost → lightgbm on with_weather
 a1b976e docs: add HANDOFF.md for cross-session continuity
