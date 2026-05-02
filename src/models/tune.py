@@ -1,4 +1,4 @@
-"""Stage 7 — Optuna tuning of XGBoost on the binary delay task.
+"""Stage 7 — Optuna tuning of a boosting model on the binary delay task.
 
 One MLflow run for the whole study (not one per trial — that would
 flood the UI). The run logs:
@@ -7,10 +7,15 @@ flood the UI). The run logs:
   - all six classification metrics for the refitted best model on val
   - the trained pipeline as an artifact (sklearn flavor)
   - best_params.yaml as a side-artifact, ready to be pasted into
-    params.yaml under train.xgboost for the next manual run
+    params.yaml under train.<model> for the next manual run
 
 Trial-level history is kept inside the Optuna study object; MLflow
 sees only the summary so the screenshot story stays one-line-per-run.
+
+Generic over the boosting library: --model xgboost (default) or
+--model lightgbm. Search spaces are kept parallel where the libraries
+share concepts (n_estimators, learning_rate, subsample, scale_pos_weight)
+so cross-library comparison stays fair.
 """
 
 from __future__ import annotations
@@ -18,8 +23,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import mlflow
 import mlflow.sklearn
@@ -29,7 +33,6 @@ import yaml
 from optuna.samplers import TPESampler
 from sklearn.metrics import f1_score
 from sklearn.pipeline import Pipeline
-from xgboost import XGBClassifier
 
 from src.config import PROJECT_ROOT, load_params
 from src.features.build_features import build_preprocessor, make_xy
@@ -43,11 +46,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("tune")
 
+SUPPORTED_MODELS = ("xgboost", "lightgbm")
 
-def _suggest_params(trial: optuna.Trial, seed: int) -> dict[str, Any]:
-    """Search space chosen to span both narrow/deep trees and shallow/wide
-    forests, plus a wide scale_pos_weight range so the sampler can re-find
-    the class-balance fix from Run #5 if it still helps."""
+
+# ---------------------------------------------------------------------------
+# XGBoost — original search space (preserved verbatim from the Run #6 study
+# so re-running tune.py for xgboost still reproduces the historical study).
+# ---------------------------------------------------------------------------
+
+
+def _suggest_params_xgboost(trial: optuna.Trial, seed: int) -> dict[str, Any]:
     return {
         "n_estimators": trial.suggest_int("n_estimators", 200, 1200, step=100),
         "max_depth": trial.suggest_int("max_depth", 4, 10),
@@ -63,9 +71,92 @@ def _suggest_params(trial: optuna.Trial, seed: int) -> dict[str, Any]:
     }
 
 
+def _xgboost_kwargs_from_best(best: dict[str, Any], seed: int) -> dict[str, Any]:
+    return {
+        **best,
+        "random_state": seed,
+        "tree_method": "hist",
+        "eval_metric": "logloss",
+        "n_jobs": -1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LightGBM — parallel search where concepts overlap, library-native otherwise.
+#
+# Notes on choices:
+#   - num_leaves is the primary complexity knob in LightGBM; max_depth left
+#     at the library default (-1 = unlimited) so the two complexity controls
+#     don't fight each other.
+#   - subsample_freq=1 is REQUIRED — without it LightGBM silently ignores
+#     the subsample value (bagging only kicks in when freq > 0).
+#   - min_child_samples is the LightGBM analogue of XGBoost's
+#     min_child_weight — it controls the minimum rows per leaf.
+#   - scale_pos_weight range mirrors the XGBoost study so the class-balance
+#     dimension is searched on the same grid → fair head-to-head with Run #6.
+# ---------------------------------------------------------------------------
+
+
+def _suggest_params_lightgbm(trial: optuna.Trial, seed: int) -> dict[str, Any]:
+    return {
+        "n_estimators": trial.suggest_int("n_estimators", 200, 1200, step=100),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 255),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "subsample_freq": 1,
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        "scale_pos_weight": trial.suggest_float("scale_pos_weight", 1.0, 5.0),
+        "random_state": seed,
+        "n_jobs": -1,
+        "verbose": -1,
+    }
+
+
+def _lightgbm_kwargs_from_best(best: dict[str, Any], seed: int) -> dict[str, Any]:
+    return {
+        **best,
+        "subsample_freq": 1,
+        "random_state": seed,
+        "n_jobs": -1,
+        "verbose": -1,
+    }
+
+
+def _build_estimator(model_name: str, kwargs: dict[str, Any]):
+    if model_name == "xgboost":
+        from xgboost import XGBClassifier
+
+        return XGBClassifier(**kwargs)
+    if model_name == "lightgbm":
+        from lightgbm import LGBMClassifier
+
+        return LGBMClassifier(**kwargs)
+    raise ValueError(f"Unsupported model for tuning: {model_name!r}")
+
+
+def _registry_for(model_name: str) -> tuple[
+    Callable[[optuna.Trial, int], dict[str, Any]],
+    Callable[[dict[str, Any], int], dict[str, Any]],
+]:
+    if model_name == "xgboost":
+        return _suggest_params_xgboost, _xgboost_kwargs_from_best
+    if model_name == "lightgbm":
+        return _suggest_params_lightgbm, _lightgbm_kwargs_from_best
+    raise ValueError(f"Unsupported model for tuning: {model_name!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Optuna-tune XGBoost; one MLflow run per study")
+    parser = argparse.ArgumentParser(
+        description="Optuna-tune a boosting model; one MLflow run per study"
+    )
     parser.add_argument("--n-trials", type=int, default=30)
+    parser.add_argument(
+        "--model",
+        default="xgboost",
+        choices=SUPPORTED_MODELS,
+        help="Boosting library to tune (default: xgboost — preserves Run #6 reproducibility)",
+    )
     parser.add_argument("--feature-set", default=None)
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args(argv)
@@ -74,9 +165,12 @@ def main(argv: list[str] | None = None) -> int:
     seed = params["base"]["random_seed"]
     set_name = args.feature_set or params["features"]["active_set"]
     fs = get_feature_set(set_name)
+    suggest_fn, kwargs_from_best = _registry_for(args.model)
 
-    log.info("Tuning XGBoost on feature_set=%s with %d trials (seed=%d)",
-             set_name, args.n_trials, seed)
+    log.info(
+        "Tuning %s on feature_set=%s with %d trials (seed=%d)",
+        args.model, set_name, args.n_trials, seed,
+    )
 
     train_df = pd.read_parquet(params["split"]["train_path"])
     val_df = pd.read_parquet(params["split"]["val_path"])
@@ -87,11 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     preprocessor = build_preprocessor(fs)
 
     def objective(trial: optuna.Trial) -> float:
-        hp = _suggest_params(trial, seed)
+        hp = suggest_fn(trial, seed)
         pipeline = Pipeline(
             steps=[
                 ("preprocessor", preprocessor),
-                ("estimator", XGBClassifier(**hp)),
+                ("estimator", _build_estimator(args.model, hp)),
             ]
         )
         pipeline.fit(x_train, y_train)
@@ -100,17 +194,18 @@ def main(argv: list[str] | None = None) -> int:
         return score
 
     sampler = TPESampler(seed=seed)
-    study = optuna.create_study(direction="maximize", sampler=sampler, study_name="xgb-f1")
+    study = optuna.create_study(
+        direction="maximize", sampler=sampler, study_name=f"{args.model}-f1"
+    )
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study.optimize(objective, n_trials=args.n_trials, show_progress_bar=False)
 
-    best_params_full = _suggest_params_from_dict(study.best_params, seed)
+    best_params_full = kwargs_from_best(study.best_params, seed)
 
-    # Refit best on train, score on val for the final summary metrics.
     final_pipeline = Pipeline(
         steps=[
             ("preprocessor", preprocessor),
-            ("estimator", XGBClassifier(**best_params_full)),
+            ("estimator", _build_estimator(args.model, best_params_full)),
         ]
     )
     final_pipeline.fit(x_train, y_train)
@@ -120,7 +215,6 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Best F1 (study): %.4f", study.best_value)
     log.info("Final metrics on val: %s", {k: round(v, 4) for k, v in metrics.items()})
 
-    # MLflow logging.
     raw_uri = params["mlflow"]["tracking_uri"]
     if raw_uri.startswith("file:") and not raw_uri.startswith("file:/"):
         rel = raw_uri.removeprefix("file:")
@@ -130,14 +224,14 @@ def main(argv: list[str] | None = None) -> int:
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(params["mlflow"]["experiment_name"])
 
-    run_name = args.run_name or f"optuna-xgboost-{set_name}"
+    run_name = args.run_name or f"optuna-{args.model}-{set_name}"
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.set_tags(
             {
                 "git_commit": _git_commit(),
                 "dvc_data_hash": _dvc_data_hash(),
                 "feature_set": set_name,
-                "model": "xgboost",
+                "model": args.model,
                 "task": "delay_binary",
                 "params_version": params["base"]["params_version"],
                 "tuning": "optuna_tpe",
@@ -153,11 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         mlflow.log_metrics({**metrics, "best_trial_number": float(study.best_trial.number)})
 
-        # Save best params as artifact in MLflow + on-disk so the user can
-        # promote them into params.yaml for the next deterministic run.
         artifact_dir = PROJECT_ROOT / "models"
         artifact_dir.mkdir(exist_ok=True)
-        best_yaml = artifact_dir / "best_xgboost_params.yaml"
+        best_yaml = artifact_dir / f"best_{args.model}_params.yaml"
         with best_yaml.open("w") as fh:
             yaml.safe_dump(study.best_params, fh, sort_keys=False)
         mlflow.log_artifact(str(best_yaml))
@@ -166,18 +258,6 @@ def main(argv: list[str] | None = None) -> int:
         log.info("MLflow run id: %s", run.info.run_id)
 
     return 0
-
-
-def _suggest_params_from_dict(d: dict[str, Any], seed: int) -> dict[str, Any]:
-    """Reconstruct the full XGBoost kwargs dict from Optuna best_params.
-    Mirrors _suggest_params() but skips the trial.suggest_* calls."""
-    return {
-        **d,
-        "random_state": seed,
-        "tree_method": "hist",
-        "eval_metric": "logloss",
-        "n_jobs": -1,
-    }
 
 
 if __name__ == "__main__":
