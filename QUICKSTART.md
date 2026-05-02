@@ -167,7 +167,33 @@ docker compose restart api       # рестарт только api без пер
 └── DATASET_CARD.md, DATA_DICTIONARY.md, DATA_QUALITY_REPORT.md  ← карточки данных
 ```
 
-## 6. Частые операции локально (без Docker)
+## 6. End-to-end демо замыкания цикла (Этап 10)
+
+Один скрипт показывает живой ML-процесс: prediction → реальная разметка → seed для следующего dvc round.
+
+```bash
+# 1. Поднять стек если ещё не поднят
+cd /tmp/vkr2-build && docker compose up -d
+
+# 2. Прогнать демо: 20 случайных рейсов из test → /predict → /feedback
+.venv/bin/python scripts/demo_feedback_cycle.py --n 20
+
+# Покажет accuracy на батче (binary ~85%, cause ~60%) и tail feedback parquet.
+
+# 3. Сконвертировать накопленный feedback в формат raw — готово к следующему dvc round
+.venv/bin/python -m src.demo.feedback_to_training
+
+# Создаёт data/feedback/next_round.parquet с теми же 68 колонками что raw,
+# плюс label_source=feedback и label_received_at для аудита.
+```
+
+После этого в реальном проекте:
+1. `cp data/feedback/next_round.parquet data/raw/flight_delays_feedback.parquet`
+2. дополнить `src/data/ingest.py` чтобы читал оба файла
+3. `dvc repro` — пересобирает featurize/train/evaluate
+4. `dvc metrics diff HEAD` — видна дельта от свежей разметки
+
+## 7. Частые операции локально (без Docker)
 
 ```bash
 source .venv/bin/activate
@@ -189,7 +215,7 @@ python -m src.models.tune --n-trials 30
 python -m src.models.score_dataset
 ```
 
-## 7. Если что-то сломалось
+## 8. Если что-то сломалось
 
 | Симптом | Что делать |
 |---|---|
