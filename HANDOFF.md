@@ -19,32 +19,41 @@ feedback_to_training.py` собирает next_round.parquet в формате r
 
 ## ⚡ Резюме для следующей сессии — что делать сразу
 
-1. **Этап 5 (DVC pipeline) ЗАКРЫТ**: 5 стадий `ingest → split → featurize →
-   train → evaluate`, `dvc repro` от raw до метрик одной командой.
-   См. секцию «🧬 DVC pipeline» ниже + `reports/DVC_SCREENSHOTS_GUIDE.md`.
-2. **Этап 7 (научные эксперименты) ЗАКРЫТ**: 13 runs, plateau на обеих
-   головах, scored test dataset собран.
-3. **Этап 8 (FastAPI + Docker) ЗАКРЫТ.** `docker compose up -d` поднимает
-   mlflow + api за минуту, обе модели грузятся из MLflow Registry
-   (`flight-delay-binary` v1, `flight-delay-cause` v1), все 4 ручки
-   возвращают те же значения что локальный TestClient. Подробности и
-   воспроизведение — в блоке «✅ Этап 8» ниже.
-4. **Что делать в начале следующей сессии:**
+**ВСЕ 10 этапов программной части ЗАКРЫТЫ** (CLAUDE.md §7). Дальнейшая
+работа — только опционально или по запросу пользователя.
+
+1. **Готовая пользовательская документация (источник правды для «как
+   пользоваться»):**
+   - `README.md` — полный обзор проекта для защиты, 11 разделов:
+     стек, что такое DVC/MLflow/FastAPI простыми словами, lifecycle,
+     структура, **как запустить два независимых стека**, все 6 ручек
+     с примерами и интерпретацией, **как обучить на своих данных**,
+     где смотреть результаты, главные результаты, out of scope.
+   - `QUICKSTART.md` — короткая операционная памятка.
+   - `HANDOFF.md` — этот файл, для Claude.
+2. **Что в начале следующей сессии (если просто продолжаем работать):**
    ```bash
    ln -sfn /Users/georgij/Projects/ВКР2 /tmp/vkr2-build && cd /tmp/vkr2-build
    docker compose up -d            # стек уже собран, поднимется за 30 сек
-   curl -s http://localhost:8000/health           # sanity
-   open http://localhost:8000/docs                # Swagger для скрина
+   curl -s http://localhost:8000/health           # {"status":"ok",...}
+   open http://localhost:8000/docs                # Swagger
    open http://localhost:5001                     # MLflow UI
    ```
-5. **Возможные следующие задачи (по плану CLAUDE.md §7):**
-   - **Этап 9** — Prometheus + structured logging. Пустая папка
-     `src/monitoring/` ждёт. Минимум: prometheus_client middleware на
-     latency/request count + json-logger на каждый predict с request_id.
-   - **Этап 10** — end-to-end демо-скрипт замыкания feedback loop:
-     POST /feedback → запись в parquet → DVC commit → сценарий
-     переобучения через `dvc repro`.
-6. **Гайды для отчёта (готовые к скринам):**
+3. **Возможные follow-up задачи (если пользователь попросит):**
+   - **pytest tests/** — папка пустая, smoke-тесты на все 6 ручек +
+     unit-тест на `feedback_to_training.merge`.
+   - **Grafana dashboard** — Prometheus endpoint живой, нужен compose
+     сервис grafana + datasource + готовый dashboard.json с тремя
+     графиками (latency p95, request rate by status, prediction
+     distribution drift).
+   - **Реальный прогон feedback → next_round.parquet → cp в data/raw
+     → dvc repro → новый MLflow run** — конкретно показать что после
+     накопления feedback метрики реально двигаются.
+   - **Промоушен Optuna best params в `params.yaml`** — сейчас они
+     gitignored в `models/best_*_params.yaml`; можно перенести в
+     `params.yaml` чтобы `dvc repro` сразу давал C5/Run #6 без
+     дополнительных шагов.
+4. **Гайды для отчёта (готовые к скринам):**
    - `reports/DVC_SCREENSHOTS_GUIDE.md` — 7 скринов про DVC + сценарий
      «изменили данные → метрика изменилась» (через `dvc metrics diff`)
    - `reports/MLFLOW_SCREENSHOTS_GUIDE.md` — скрины MLflow UI
@@ -152,6 +161,77 @@ artifact mount работают идентично dev-режиму.
    13 runs + двумя registered models (для главы 4 «Внедрение»).
 3. (опционально) `docker compose ps` + `docker stats` — скрин про
    лёгкость стека.
+
+---
+
+## ✅ Этап 9 — observability и feedback loop
+
+Три модуля под `src/monitoring/`:
+
+- `logger.py` — `JsonFormatter` + `configure()`. Каждый запрос → одна
+  JSON-строка на stdout с `request_id`, `method`, `path`, `status`,
+  `duration_ms`. Predict/feedback события дополнительно несут `model`,
+  `prediction`, `probability`. `uvicorn.access` отключен чтобы не
+  дублировать.
+- `metrics.py` — отдельный `CollectorRegistry`, три метрики:
+  `api_requests_total{endpoint,method,status}` (counter),
+  `api_request_duration_seconds{endpoint,method}` (histogram, 10
+  бакетов 5ms…5s), `api_predictions_total{model,outcome}` (counter
+  для отлова дрейфа). Render в Prometheus text format через `render()`.
+- `feedback.py` — thread-safe append-only sink в parquet. Путь читается
+  из env `FEEDBACK_STORE`, default `data/feedback/feedback.parquet`.
+
+Всё связано одной middleware в `src/api/main.py`: ставит request_id
+(или принимает входящий `X-Request-ID`), таймит запрос, дёргает Prometheus
++ JSON-лог, эхо-возвращает request_id в response header.
+
+Новые ручки:
+- `POST /feedback` — принимает `FeedbackRecord` (request_id + хотя бы
+  одно из actual_is_delayed/actual_delay_minutes/actual_cause), пишет
+  в parquet через `feedback.append()`. 422 если все actual_* пустые.
+- `GET /metrics` — Prometheus text exposition.
+
+Bind-mount в compose: `./data/feedback:/app/data/feedback` — parquet
+переживает `docker compose down`.
+
+Инсталляция: `prometheus-client>=0.21,<1.0` в `pyproject.toml` и в
+`docker/api.Dockerfile`.
+
+---
+
+## ✅ Этап 10 — end-to-end демо замыкания цикла
+
+Два скрипта:
+
+- `scripts/demo_feedback_cycle.py` — пользовательский demo. Берёт N
+  случайных рейсов из `data/processed/test.parquet`, шлёт каждый
+  через `POST /predict/delay` + `POST /predict/cause` (с тем же
+  request_id), потом `POST /feedback` с actual labels из той же
+  test-строки. Печатает batch accuracy и tail feedback parquet.
+  CLI: `--n 20 --seed 42 --base-url http://localhost:8000`.
+  Прогон seed=42 n=20: binary 17/20 (85%), cause 12/20 (60%) — в
+  полосе тест-метрик главы 3 (binary 81.9%, cause 69.6%).
+- `src/demo/feedback_to_training.py` — конвертер feedback parquet →
+  raw schema. Извлекает flight_id из `notes` поля (формат `flight_id=
+  RU...`), мержит с source-датасетом по этому id, заменяет ground-truth
+  колонки на actual_* из feedback, добавляет `label_source=feedback` и
+  `label_received_at`. Output: `data/feedback/next_round.parquet`
+  (68 колонок + 2 audit). CLI: `--feedback --source --out`.
+
+Что демо показывает на защите:
+1. Цикл реально замкнут: prediction → feedback → parquet → конвертер
+   → формат, готовый к ingest.
+2. Контейнерный API даёт те же предсказания что offline pipeline (test
+   accuracy совпадает с reports/test_metrics.json).
+3. Один `request_id` связывает predict-лог, feedback-лог и parquet-row
+   — полная аудит-цепочка.
+
+Что специально НЕ сделано (можно как follow-up):
+- Реальное `cp data/feedback/next_round.parquet data/raw/...` + ingest
+  extension + `dvc repro` для сборки нового MLflow run на feedback-данных.
+  Реализуемо за час, но добавляет шум в эксперимент-серию (новый run
+  на feedback-rows будет «дубль того что уже видела модель», для
+  thesis-демо честнее показать механику пустого цикла).
 
 ---
 
@@ -447,7 +527,9 @@ xgboost defaults + delay_cause):
 | brew libomp | `/opt/homebrew/opt/libomp` | — | ✅ (нужно для xgboost на macOS) |
 | openpyxl | `.venv/bin/python` | 3.1.5 | ✅, добавлен в `pyproject.toml` для `score_dataset.py` |
 | **docker CLI** | системный | 29.4.1 | ✅ установлен (через `brew install --cask docker`) |
-| **docker daemon** | Docker Desktop | — | ⚠️ **не запущен** — нужен `open -a Docker` в начале след. сессии |
+| **docker daemon** | Docker Desktop, context `desktop-linux` | — | ✅ работает, `flight-delay-{api,mlflow}` healthy |
+| **prometheus-client** | `.venv/bin/python` + api image | 0.21.x | ✅ для Stage 9 |
+| **requests** | `.venv/bin/python` | — | ✅ для demo-скрипта |
 
 ### Команды для рестарта окружения
 
@@ -480,18 +562,18 @@ python -m src.models.score_dataset
 ## Файловая структура на момент handoff
 
 ```
-├── HANDOFF.md                              ← ЭТО ОН
+├── HANDOFF.md                              ← ЭТО ОН (для Claude между сессиями)
 ├── CLAUDE.md                               ← основные правила проекта
-├── reports/
-│   ├── experiments_log.md                  ← основной артефакт серии (13 runs, дельты)
-│   ├── SCORED_DATASET_README.md            ← русскоязычная инструкция к scored датасету
-│   ├── scored_test_dataset.parquet         ← gitignored, регенерируется
-│   ├── scored_test_dataset.csv             ← gitignored, регенерируется
-│   └── scored_test_dataset.xlsx            ← gitignored, регенерируется
+├── README.md                               ← полный обзор для защиты (для пользователя)
+├── QUICKSTART.md                           ← короткая операционная памятка
+├── docker-compose.yml                      ← mlflow + api, два контейнера
+├── docker/
+│   ├── api.Dockerfile                      ← multi-stage python:3.11-slim, uv, healthcheck
+│   └── mlflow.Dockerfile                   ← file backend на /mlflow/mlruns
 ├── params.yaml                             ← конфиг всех экспериментов
 ├── dvc.yaml                                ← 5 stages: ingest, split, featurize, train, evaluate
 ├── dvc.lock
-├── pyproject.toml                          ← + openpyxl
+├── pyproject.toml                          ← + openpyxl, prometheus-client, requests
 ├── src/
 │   ├── config.py                           ← load_params()
 │   ├── data/
@@ -501,38 +583,67 @@ python -m src.models.score_dataset
 │   ├── features/
 │   │   ├── feature_sets.py                 ← BASIC / EXTENDED / WITH_WEATHER + LEAKAGE
 │   │   └── build_features.py               ← ColumnTransformer + make_xy
-│   └── models/
-│       ├── train.py                        ← MLflow entry-point + binary AND multiclass dispatch
-│       ├── tune.py                         ← Optuna study (xgb/lgbm × binary/cause)
-│       ├── evaluate.py                     ← binary + multiclass metric helpers
-│       ├── dvc_featurize.py                ← DVC stage: split → X/y + manifest
-│       ├── dvc_train.py                    ← DVC stage: fit Pipeline → model.pkl + val_metrics
-│       ├── dvc_evaluate.py                 ← DVC stage: test scoring → test_metrics + confusion
-│       └── score_dataset.py                ← финальный scored test dataset (обе головы)
-├── data/raw/{flight_delays_ru.parquet, sample.csv}.dvc   ← в git, данные в DVC remote
-├── data/featurized/                                      ← gitignored, DVC stage output (X/y splits + manifest)
-├── models/best_xgboost_params.yaml                       ← gitignored, Run #6
-├── models/best_lightgbm_params.yaml                      ← gitignored, Run #8
-├── models/best_xgboost_delay_cause_params.yaml           ← gitignored, C5
-├── models/label_classes_delay_cause.yaml                 ← gitignored, для inference cause-головы
-├── models/dvc_model.pkl                                  ← gitignored, DVC stage output (последний train)
-├── models/dvc_label_classes.json                         ← gitignored, DVC stage output (для evaluate)
-├── reports/val_metrics.json                              ← в git (DVC metric, cache: false)
-├── reports/test_metrics.json                             ← в git (DVC metric, cache: false)
-├── reports/confusion_matrix.csv                          ← в git (DVC plot, cache: false)
-└── mlruns/                                               ← gitignored, 13 runs
+│   ├── models/
+│   │   ├── train.py                        ← MLflow entry-point + binary AND multiclass dispatch
+│   │   ├── tune.py                         ← Optuna study (xgb/lgbm × binary/cause)
+│   │   ├── evaluate.py                     ← binary + multiclass metric helpers
+│   │   ├── dvc_featurize.py                ← DVC stage: split → X/y + manifest
+│   │   ├── dvc_train.py                    ← DVC stage: fit Pipeline → model.pkl + val_metrics
+│   │   ├── dvc_evaluate.py                 ← DVC stage: test scoring → test_metrics + confusion
+│   │   ├── score_dataset.py                ← финальный scored test dataset (обе головы)
+│   │   └── registry.py                     ← Stage 8: регистрация Run #6 + C5 в Model Registry
+│   ├── api/                                ← Stage 8 + 9
+│   │   ├── main.py                         ← FastAPI app, 6 ручек + observability middleware
+│   │   ├── schemas.py                      ← Pydantic FlightFeatures, FeedbackRecord, FeedbackAck
+│   │   └── inference.py                    ← ModelStore: грузит обе модели из MLflow Registry
+│   ├── monitoring/                         ← Stage 9
+│   │   ├── logger.py                       ← JsonFormatter + configure(); один JSON-объект на запрос
+│   │   ├── metrics.py                      ← Prometheus: requests, latency, predictions
+│   │   └── feedback.py                     ← thread-safe append-only parquet sink под /feedback
+│   └── demo/                               ← Stage 10
+│       └── feedback_to_training.py         ← merge feedback parquet → next_round.parquet (raw schema)
+├── scripts/
+│   └── demo_feedback_cycle.py              ← Stage 10: end-to-end demo (predict→feedback→accuracy)
+├── reports/
+│   ├── experiments_log.md                  ← основной артефакт серии (13 runs, дельты)
+│   ├── DVC_SCREENSHOTS_GUIDE.md            ← гайд: какие скрины DVC делать
+│   ├── MLFLOW_SCREENSHOTS_GUIDE.md        ← гайд: какие скрины MLflow делать
+│   ├── SCORED_DATASET_README.md            ← русскоязычная инструкция к scored датасету
+│   ├── scored_test_dataset.{csv,parquet,xlsx}  ← gitignored, регенерируются
+│   ├── val_metrics.json                    ← в git (DVC metric, cache: false)
+│   ├── test_metrics.json                   ← в git (DVC metric, cache: false)
+│   └── confusion_matrix.csv                ← в git (DVC plot, cache: false)
+├── data/
+│   ├── raw/{flight_delays_ru.parquet, sample.csv}.dvc   ← в git, данные в DVC remote
+│   ├── featurized/                         ← gitignored, DVC stage output (X/y splits + manifest)
+│   └── feedback/                           ← Stage 9: bind-mount target для /feedback parquet
+│       ├── .gitkeep
+│       ├── feedback.parquet                ← gitignored, append-only от POST /feedback
+│       └── next_round.parquet              ← gitignored, output Stage 10 конвертера
+├── models/                                 ← gitignored
+│   ├── best_xgboost_params.yaml            ← Run #6
+│   ├── best_lightgbm_params.yaml           ← Run #8
+│   ├── best_xgboost_delay_cause_params.yaml ← C5
+│   ├── label_classes_delay_cause.yaml      ← для inference cause-головы (НЕ gitignored — нужен api image)
+│   ├── dvc_model.pkl                       ← DVC stage output (последний train)
+│   └── dvc_label_classes.json              ← DVC stage output (для evaluate)
+└── mlruns/                                 ← gitignored, 13 runs + 2 registered models
+                                              (bind-mounted в оба контейнера через docker-compose)
 ```
 
-Чего ещё НЕТ (план для Этапа 8):
-- `src/models/registry.py` — обёртка над MLflow Model Registry
-- `src/api/main.py`, `src/api/schemas.py`, `src/api/inference.py`
-- `src/monitoring/` — пусто (Этап 9)
-- `docker/api.Dockerfile`, `docker/mlflow.Dockerfile`,
-  `docker-compose.yml`
-- `tests/` — пусто (тестов ещё не писали; добавить с Этапом 8 — pytest
-  на API endpoints)
+Чего ещё НЕТ (опциональные follow-ups, не блокеры):
+- `tests/` — пусто. Запросов на pytest пока не было, но если попросят —
+  очевидный набор: TestClient на каждую из 6 ручек + unit-тест на
+  `src/demo/feedback_to_training.merge` + параметризованный тест на
+  `src/monitoring/feedback.append` (тред-сейф, idempotency).
+- Grafana — Prometheus endpoint живой, dashboard.json не написан.
 - `notebooks/03_eda.ipynb` — не создан, EDA пропустили в пользу быстрого
-  baseline
+  baseline.
+
+Чего НЕТ намеренно (см. CLAUDE.md §5.4):
+- LLM, нейросети, готовые предобученные модели как финал — запрещены.
+- Frontend / UI поверх API — «программного обеспечения должно быть
+  минимум». Swagger UI достаточно.
 
 ---
 
